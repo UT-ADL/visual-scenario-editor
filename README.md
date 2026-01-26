@@ -90,7 +90,7 @@ Run a saved scenario on existing Carla server with external agent:
 python vse_play.py scenario.json --agent /path/to/my_agent.py
 ```
 
-For futher instructions check the [tutorial](https://gitlab.cs.ut.ee/autonomous-driving-lab/simulations/visual-scenario-editor/-/blob/main/tutorial.md)
+For futher instructions check the [tutorial](tutorial.md)
 
 
 ### Launching VSE with Autoware Mini
