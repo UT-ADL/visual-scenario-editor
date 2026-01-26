@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [1.0.0] - 2026-01-23
+## [1.0.0] - 2026-01-26
 
 ### Added
 - VSE now launches to a main screen where users can choose between tasks
@@ -34,6 +34,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 - vse_play.py spawning pedestrians at incorrect elevation
 - UI layering issues (UI elements no longer render on top of menus)
+- Pedestrian pathing updated
 
 ## [0.3.0] - 2025-11-26
 
