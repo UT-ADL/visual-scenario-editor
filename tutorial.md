@@ -159,5 +159,17 @@ Editing:
 - **Map list is empty**: set `CARLA_ROOT` so VSE can find `.umap` files.
 - **“Cannot change map while a scenario is running”**: press **Stop** first.
 - **Play fails but editing works**: playback uses `vse_play.py` dependencies; check console logs.
-- **Low FPS with an external ego (agent-controlled)**: set **Stream resolution** (top bar) to **No Camera** to disable the camera stream (often improves FPS).
+- **Low FPS with an agent-controlled ego**: set **Stream resolution** (top bar) to **No Camera** to disable the camera stream (often improves FPS).
 - **No camera frames / editor looks frozen**: try enabling **Drive Clock** in the top bar if the world is in synchronous mode.
+
+## Optional: Agent-Controlled Ego (Set Agent)
+
+If you are running playback with an **agent-controlled ego**, pick the agent file in VSE:
+
+1) In the top bar (near **Play**), click **Set Agent**.
+2) In the **Select Agent** dialog, choose your agent `.py` file and click **Select**.
+3) To remove it later, click **Clear Agent**.
+
+Expect:
+- After selecting, the button changes to **Clear Agent** and shows the agent filename under it.
+- You can’t change the agent while a scenario is running (press **Stop** first).
