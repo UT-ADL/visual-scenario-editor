@@ -45,7 +45,7 @@ Dependencies:
 - Numpy
 
 Author: ADL
-Date: 2025
+Date: 2026
 """
 
 
@@ -1141,6 +1141,10 @@ class TriggerOverlayRenderer:
         """Render trigger zones using CARLA debug drawing."""
         cp = processor
         if not cp.triggers:
+            return
+
+        # Hide triggers during scenario playback
+        if cp.editor and cp.editor.scenario_running:
             return
 
         for idx, trigger in enumerate(cp.triggers):
@@ -8133,8 +8137,8 @@ class CameraImageProcessor:
                             target_location = dest_wp.transform.location
 
                             # Simple waypoint following
-                            distance_threshold = 15.0  # meters between waypoints
-                            min_distance_from_vehicle = 15.0  # minimum distance from vehicle to prevent extra markers
+                            distance_threshold = 5.0  # meters between waypoints
+                            min_distance_from_vehicle = 5.0  # minimum distance from vehicle to prevent extra markers
                             last_added_location = None
                             max_iterations = 200  # Prevent infinite loops
 
@@ -8205,8 +8209,8 @@ class CameraImageProcessor:
                                 target_location = closest_road_wp.transform.location
 
                                 # Simple waypoint following
-                                distance_threshold = 15.0  # meters between waypoints
-                                min_distance_from_vehicle = 15.0  # minimum distance from vehicle to prevent extra markers
+                                distance_threshold = 5.0  # meters between waypoints
+                                min_distance_from_vehicle = 5.0  # minimum distance from vehicle to prevent extra markers
                                 last_added_location = None
                                 max_iterations = 200
 
@@ -8272,7 +8276,7 @@ class CameraImageProcessor:
                        (destination['y'] - start_point['y'])**2)**0.5
 
             if distance > 50:  # If distance is more than 50 meters, add intermediate points
-                num_intermediate = int(distance / 30)  # One point every 30 meters
+                num_intermediate = int(distance / 10)  # One point every 10 meters
                 for i in range(1, num_intermediate):
                     t = i / (num_intermediate + 1)
                     intermediate = {
@@ -8430,6 +8434,9 @@ class CameraImageProcessor:
 
     def cancel_personal_trigger_placement(self) -> None:
         """Abort any pending personal trigger placement."""
+        if self.pending_personal_trigger:
+            kind = self.pending_personal_trigger.get('kind', 'unknown')
+            print(f"Personal trigger placement cancelled ({kind})")
         self.pending_personal_trigger = None
 
     def place_trigger_at_click(self, screen_x, screen_y):
@@ -10089,6 +10096,7 @@ class CameraImageProcessor:
         for group in self.traffic_light_groups:
             group.trigger_center = None
             group.trigger_radius = None
+            group.sequence = []
         self.clear_traffic_light_selection()
 
     def _load_vehicle_entry(self, vehicle_data, blueprint_library, ego_data, context):
@@ -11797,6 +11805,21 @@ class CameraImageProcessor:
         self._delete_traffic_light_trigger_data(group=target_group)
         self.traffic_light_sequences.pop(frozenset(target_group.ids), None)
         target_group.sequence = []
+
+        # Update snapshot to prevent restoration of deleted trigger
+        for snapshot in self._traffic_light_group_snapshots:
+            # Check if this snapshot matches the target group
+            ids_match = (snapshot.get("ids_live") == target_group.ids or
+                         snapshot.get("reference_ids") == target_group.reference_ids)
+            fp_match = (snapshot.get("fingerprint") == target_group.location_fingerprint
+                        if target_group.location_fingerprint else False)
+
+            if ids_match or fp_match:
+                # Clear trigger and sequence from snapshot
+                snapshot["trigger"] = None
+                snapshot["sequence"] = None
+                break
+
         print(f"Deleted traffic light trigger for IDs {sorted(target_group.ids)}")
         if (self.selected_personal_trigger
                 and self.selected_personal_trigger.get('kind') == 'traffic_light'
@@ -18169,6 +18192,14 @@ class VisualScenarioEditor:
             elif self.camera_processor and self.camera_processor.creating_waypoint:
                 self.camera_processor.stop_waypoint_creation()
                 print("Waypoint creation cancelled")
+            elif self.camera_processor and self.camera_processor.placing_trigger:
+                self.camera_processor.stop_trigger_placement()
+                self._reset_right_click_cancel_state()
+                print("Trigger placement cancelled")
+            elif self.camera_processor and self.camera_processor.pending_personal_trigger:
+                self.camera_processor.cancel_personal_trigger_placement()
+                self._reset_right_click_cancel_state()
+                print("Personal trigger placement cancelled")
             elif self.camera_processor and self.camera_processor.moving_waypoint:
                 self.camera_processor.moving_waypoint = False
                 self.camera_processor.selected_waypoint_vehicle_id = None
@@ -18651,11 +18682,12 @@ class VisualScenarioEditor:
         keys = pygame.key.get_pressed()
         in_scene_click = event.pos[1] > 80
 
-        if (self.camera_processor and self.camera_processor.placing_trigger and in_scene_click):
-            print("Right click detected - cancelling trigger placement mode")
-            self.camera_processor.stop_trigger_placement()
-            self._reset_right_click_cancel_state()
-            return True
+        # Check if we're in any trigger placement mode
+        cancel_trigger = (
+            self.camera_processor
+            and (self.camera_processor.placing_trigger
+                 or self.camera_processor.pending_personal_trigger)
+        )
 
         cancel_waypoint = (
             self.camera_processor
@@ -18673,7 +18705,7 @@ class VisualScenarioEditor:
             self._reset_right_click_cancel_state()
             return True
         else:
-            if cancel_waypoint:
+            if cancel_trigger or cancel_waypoint:
                 self._arm_right_click_cancel(event.pos)
             else:
                 self._reset_right_click_cancel_state()
@@ -18721,10 +18753,19 @@ class VisualScenarioEditor:
             elif self.camera_processor:
                 self.camera_processor.handle_waypoint_mouse_release()
         elif event.button in (2, 3):
-            if (event.button == 3 and self.right_click_cancel_pending and self.camera_processor
-                    and self.camera_processor.creating_waypoint):
-                print("Right click detected - cancelling waypoint creation mode")
-                self.camera_processor.stop_waypoint_creation()
+            if event.button == 3 and self.right_click_cancel_pending and self.camera_processor:
+                # Check waypoint first (existing behavior)
+                if self.camera_processor.creating_waypoint:
+                    print("Right click detected - cancelling waypoint creation mode")
+                    self.camera_processor.stop_waypoint_creation()
+                # Then check global trigger placement
+                elif self.camera_processor.placing_trigger:
+                    print("Right click detected - cancelling trigger placement mode")
+                    self.camera_processor.stop_trigger_placement()
+                # Then check personal trigger placement
+                elif self.camera_processor.pending_personal_trigger:
+                    print("Right click detected - cancelling personal trigger placement mode")
+                    self.camera_processor.cancel_personal_trigger_placement()
             if event.button == 3:
                 self._reset_right_click_cancel_state()
             if self.mouse_dragging and self.mouse_drag_button == event.button:
