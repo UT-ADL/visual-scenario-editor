@@ -173,3 +173,17 @@ If you are running playback with an **agent-controlled ego**, pick the agent fil
 Expect:
 - After selecting, the button changes to **Clear Agent** and shows the agent filename under it.
 - You can’t change the agent while a scenario is running (press **Stop** first).
+
+## Optional: Example Scenarios (examples/)
+
+If you want a ready-made scenario that uses more VSE features, open the included examples:
+
+1) Click **Scenario** → **Open** (or use **Open Scenario** on the start screen).
+2) Open `examples/Town01/town01_route.json`.
+
+Expect:
+- If needed, VSE auto-switches to the scenario’s map (`Town01`) and loads the actors/routes.
+- You can inspect how triggers, traffic-light triggers, and weather keyframes are authored.
+
+Also available:
+- `examples/tartu_demo/tartu_demo_route.json` (requires the `tartu_demo` map to exist in your CARLA build).

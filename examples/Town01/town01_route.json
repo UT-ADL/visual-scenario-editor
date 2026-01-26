@@ -1,12 +1,12 @@
 {
   "vehicles": [
     {
-      "id": 237,
+      "id": 280,
       "type": "vehicle.volkswagen.t2_2021",
       "location": {
         "x": 338.8811340332031,
         "y": 31.09206199645996,
-        "z": 0.10513019561767578
+        "z": 0.10066615790128708
       },
       "rotation": {
         "pitch": 0.0,
@@ -168,7 +168,7 @@
       }
     },
     {
-      "id": 238,
+      "id": 281,
       "type": "walker.pedestrian.0001",
       "location": {
         "x": 332.09295654296875,
@@ -177,7 +177,7 @@
       },
       "rotation": {
         "pitch": 0.0,
-        "yaw": 166.72628784179688,
+        "yaw": 166.725830078125,
         "roll": 0.0
       },
       "speed_km_h": 6.0,
@@ -244,7 +244,7 @@
       }
     },
     {
-      "id": 239,
+      "id": 282,
       "type": "walker.pedestrian.0051",
       "location": {
         "x": 79.37730407714844,
@@ -320,12 +320,12 @@
       }
     },
     {
-      "id": 240,
+      "id": 283,
       "type": "vehicle.tesla.cybertruck",
       "location": {
         "x": 158.04335021972656,
         "y": 30.11370277404785,
-        "z": 0.0830407589673996
+        "z": 0.07301196455955505
       },
       "rotation": {
         "pitch": 0.0,
@@ -484,16 +484,69 @@
         },
         "radius": 4.1
       }
+    },
+    {
+      "id": 284,
+      "type": "walker.pedestrian.0015",
+      "location": {
+        "x": 52.75797653198242,
+        "y": 1.7011802196502686,
+        "z": 0.9514999985694885
+      },
+      "rotation": {
+        "pitch": 0.0,
+        "yaw": -163.5937957763672,
+        "roll": 0.0
+      },
+      "speed_km_h": 6.0,
+      "idle_time_s": 0.0,
+      "waypoints": [
+        {
+          "index": 1,
+          "location": {
+            "x": 43.46865661882158,
+            "y": -1.033899136052923,
+            "z": 0.0
+          },
+          "yaw": null,
+          "speed_km_h": 6.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "turn_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": "destination",
+          "location": {
+            "x": 31.412844533398392,
+            "y": -5.222441604134062,
+            "z": 0.10429199039936066
+          },
+          "yaw": null,
+          "speed_km_h": 6.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "turn_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": true
+        }
+      ],
+      "turn_time_s": 0.0,
+      "ignore_traffic_lights": false,
+      "ignore_stop_signs": false,
+      "ignore_vehicles": true,
+      "destination_speed_km_h": 6.0
     }
   ],
-  "timestamp": 1769421138.316148,
+  "timestamp": 1769423742.590015,
   "map_name": "Town01",
   "ego_vehicle": {
     "type": "vehicle.lexus.utlexus",
     "location": {
       "x": 19.21120834350586,
       "y": 1.977333664894104,
-      "z": 2.276594877243042
+      "z": 3.2595088481903076
     },
     "rotation": {
       "pitch": -0.0007308301865123212,
@@ -613,6 +666,14 @@
       }
     ],
     "destination_speed_km_h": 40.0
+  },
+  "trigger": {
+    "location": {
+      "x": 22.926988847276608,
+      "y": 2.172571434310507,
+      "z": 1.9531249563442543e-05
+    },
+    "radius": 2.5
   },
   "traffic_light_triggers": [
     {

@@ -1562,10 +1562,12 @@ class VehicleController:
             return
 
         # Wait for global trigger activation if required (actors without personal triggers)
+        # Note: Ego vehicle (index=-1) is exempt from this wait to avoid deadlock
         if (
             self.scenario
             and self.scenario._trigger_mode
             and not self._vehicle_trigger
+            and self.index >= 0  # Ego has index=-1, exempt it
         ):
             while self._running and self.vehicle and self.vehicle.is_alive and self.scenario._keep_running:
                 if getattr(self.scenario, "_global_trigger_released", False):
