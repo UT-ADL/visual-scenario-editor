@@ -2,6 +2,8 @@
 
 This is a short, beginner-friendly tutorial for `vse.py` (Visual Scenario Editor).
 
+[![Watch the video](https://img.youtube.com/vi/jaBjUwShg9Q/maxresdefault.jpg)](https://www.youtube.com/watch?v=jaBjUwShg9Q)
+
 ## What You Can Create
 
 In VSE you can build a scenario JSON that includes:
@@ -47,24 +49,19 @@ Expect:
 - A visible waypoint/path for the ego.
 - During playback, VSE will drive the ego automatically when it has a route.
 
-### 3) Add the global trigger (required for this tutorial)
-
-1) Click **Trigger** mode.
-2) Click in the world to place the trigger circle.
-3) Click the trigger to select it, then use the floating menu:
-   - **Move**: drag the center
-   - **Scale**: drag to change radius
-   - **Delete**: remove it
-
-Expect:
-- A single trigger zone exists (only one global trigger per scenario).
-
-### 4) Add at least one NPC vehicle with a route
+### 3) Add at least one NPC vehicle with a route
 
 1) Click **NPC Vehicles** mode.
 2) Choose a vehicle blueprint.
 3) Hold `Ctrl` and **Left Click** to spawn it.
 4) Click the spawned NPC vehicle to select it.
+
+Optional (NPC behavior):
+- In the Info panel (right side), you can toggle:
+  - **Ignore Traffic Lights** (NPC will not stop for traffic lights)
+  - **Ignore Stop Signs** (stop signs, not traffic-light stop lines)
+  - **Ignore Vehicles** (does not avoid other vehicles; enabled by default for new NPCs)
+- These options are saved into the scenario JSON and applied during playback.
 
 Now pick one routing method:
 
@@ -80,14 +77,26 @@ Now pick one routing method:
 Expect:
 - The NPC now has a path, and it becomes “playable” during playback.
 
-### 5) (Optional) Add a pedestrian
+### 4) Add a pedestrian
 
 1) Click **Pedestrians** mode.
 2) Choose a pedestrian blueprint.
 3) Hold `Ctrl` and **Left Click** to spawn.
 4) Add waypoints via the floating menu (same idea as vehicles).
 
-### 6) (Optional) Add personal triggers (per NPC / pedestrian)
+### 5) Add the global trigger
+
+1) Click **Trigger** mode.
+2) Click in the world to place the trigger circle.
+3) Click the trigger to select it, then use the floating menu:
+   - **Move**: drag the center
+   - **Scale**: drag to change radius
+   - **Delete**: remove it
+
+Expect:
+- A single trigger zone exists (only one global trigger per scenario).
+
+### 6) Add personal triggers (per NPC / pedestrian)
 
 Personal triggers are per-actor trigger circles (not supported for the ego).
 
@@ -96,7 +105,7 @@ Personal triggers are per-actor trigger circles (not supported for the ego).
 3) Click to place the trigger center.
 4) Select the trigger circle to move/scale it (or edit radius in the Info panel).
 
-### 7) (Optional) Traffic-light triggers
+### 7) Traffic-light triggers
 
 1) Press `T` to enable the traffic-light stop line overlay.
 2) Click a red stop-line marker to select a traffic-light *group*.
@@ -105,7 +114,7 @@ Personal triggers are per-actor trigger circles (not supported for the ego).
    - Trigger radius
    - Optional sequence steps (color + duration)
 
-### 8) (Optional) Weather
+### 8) Weather
 
 1) Click **Weather** to open the weather window.
 2) Adjust sliders (live preview).
@@ -151,7 +160,7 @@ Editing:
   - Move/waypoints: snap by default; hold `Shift` for free placement while dragging/placing.
 - Selection:
   - Click an actor to select; a floating icon menu appears near it.
-  - The Info panel (right side) shows editable fields like speed, idle time, trigger radius, etc.
+  - The Info panel (right side) shows editable fields like speed, idle time, trigger radius, and vehicle ignore flags (traffic lights / stop signs / vehicles).
 
 ## Troubleshooting
 
@@ -187,3 +196,4 @@ Expect:
 
 Also available:
 - `examples/tartu_demo/tartu_demo_route.json` (requires the `tartu_demo` map to exist in your CARLA build).
+- `examples/tutorial.json` (scenario created during the video tutorial).

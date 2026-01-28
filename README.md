@@ -2,6 +2,8 @@
 
 A graphical tool for creating and editing driving scenarios for the CARLA Simulator.
 
+[![Watch the video](https://img.youtube.com/vi/jaBjUwShg9Q/maxresdefault.jpg)](https://www.youtube.com/watch?v=jaBjUwShg9Q)
+
 ## Features
 
 - Top-down map viewer with panning and zooming
@@ -106,6 +108,9 @@ Launch Autoware Mini
 ```
 roslaunch autoware_mini start_carla.launch use_scenario_runner:=true map_name:="name_of_a_map"
 ```
+
+Use the Play button in VSE
+
 
 ## Changelog
 

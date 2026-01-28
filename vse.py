@@ -379,13 +379,13 @@ REMOTE_STREAM_RESOLUTIONS: Tuple[Tuple[int, int], ...] = (
 )
 
 _WALKER_COLOR_PALETTE: List[Tuple[int, int, int]] = [
-    (0, 255, 0),
-    (0, 0, 255),
-    (255, 255, 0),
-    (255, 0, 255),
-    (0, 255, 255),
-    (255, 165, 0),
-    (255, 105, 180),
+    (0, 75, 0),      # Dark green
+    (0, 0, 75),      # Dark blue
+    (75, 75, 0),     # Dark yellow
+    (75, 0, 75),     # Dark magenta
+    (0, 75, 75),     # Dark cyan
+    (75, 50, 0),     # Dark orange
+    (75, 30, 55),    # Dark pink
 ]
 
 NO_CAMERA_STREAM_RESOLUTIONS: Tuple[Tuple[int, int], ...] = (
@@ -3594,10 +3594,13 @@ class WorldCoordinateDetector:
                 
         if not vehicle or not vehicle.is_alive:
             return
-            
+
+        # Calculate line scale based on camera height (thinner when zoomed in close)
+        line_scale = max(0.5, min(1.5, self.camera_controller.height / 200.0))
+
         # Draw connection lines first (so they appear behind markers)
-        self._draw_waypoint_connections_carla_debug(vehicle, waypoints)
-        
+        self._draw_waypoint_connections_carla_debug(vehicle, waypoints, line_scale=line_scale)
+
         # Draw starting point marker if vehicle is hidden for scenario
         start_point = self._get_start_marker_for_vehicle(vehicle)
         if start_point:
@@ -3607,7 +3610,7 @@ class WorldCoordinateDetector:
             self.world.debug.draw_point(
                 start_location,
                 size=0.5,
-                color=carla.Color(255, 0, 255),  # Magenta for starting point
+                color=carla.Color(150, 0, 150),  # Muted magenta for starting point
                 life_time=self.waypoint_debug_lifetime
             )
             
@@ -3649,7 +3652,7 @@ class WorldCoordinateDetector:
             
             # Draw different markers based on type
             if is_finish_line:
-                self._draw_finish_line_carla_debug(location, waypoints, i, is_selected, is_hovered)
+                self._draw_finish_line_carla_debug(location, waypoints, i, is_selected, is_hovered, line_scale=line_scale)
             else:
                 # Draw main waypoint marker (slightly bigger for better visibility)
                 marker_size = 0.4 if is_selected or is_hovered else 0.3
@@ -3666,17 +3669,17 @@ class WorldCoordinateDetector:
                     text_location,
                     str(i + 1),
                     draw_shadow=True,
-                    color=carla.Color(255, 255, 255),
+                    color=carla.Color(180, 180, 180),  # Slightly dimmed white for readability
                     life_time=self.waypoint_debug_lifetime,
                     persistent_lines=False
                 )
                 
             # Direction arrows removed for cleaner appearance
     
-    def _draw_waypoint_connections_carla_debug(self, vehicle, waypoints):
+    def _draw_waypoint_connections_carla_debug(self, vehicle, waypoints, *, line_scale=1.0):
         """Draw connection lines between waypoints using CARLA debug drawing"""
-        line_color = carla.Color(0, 255, 0)  # Green connection lines
-        
+        line_color = carla.Color(0, 75, 0)  # Dark green so markers stand out
+
         for i, waypoint in enumerate(waypoints):
             if i == 0:
                 # First waypoint - connect to vehicle or starting point marker
@@ -3716,32 +3719,32 @@ class WorldCoordinateDetector:
             self.world.debug.draw_line(
                 start_location,
                 end_location,
-                thickness=0.1,
+                thickness=0.1 * line_scale,
                 color=line_color,
                 life_time=self.waypoint_debug_lifetime
             )
-    
-    def _draw_finish_line_carla_debug(self, location, waypoints, waypoint_index, is_selected, is_hovered):
+
+    def _draw_finish_line_carla_debug(self, location, waypoints, waypoint_index, is_selected, is_hovered, *, line_scale=1.0):
         """Draw a finish line pattern for the last waypoint using CARLA debug drawing"""
         # Calculate trajectory direction for perpendicular orientation
         if waypoint_index > 0:
             # Use direction from previous waypoint to this one
             prev_waypoint = waypoints[waypoint_index - 1]
             current_waypoint = waypoints[waypoint_index]
-            
+
             # Calculate trajectory angle
             dx = current_waypoint['x'] - prev_waypoint['x']
             dy = current_waypoint['y'] - prev_waypoint['y']
             trajectory_angle = math.atan2(dy, dx)
-            
+
             # Perpendicular angle (90 degrees rotated)
             perpendicular_angle = trajectory_angle + math.pi / 2
         else:
             perpendicular_angle = 0  # Default horizontal for single waypoint
-        
+
         # Finish line dimensions (balanced size for close and far zoom)
         line_length = 5.0 if is_selected or is_hovered else 4.0
-        line_thickness = 0.14 if is_selected or is_hovered else 0.1
+        line_thickness = (0.14 if is_selected or is_hovered else 0.1) * line_scale
         
         # Calculate finish line endpoints
         half_length = line_length / 2
@@ -3755,8 +3758,8 @@ class WorldCoordinateDetector:
         
         # Draw finish line (red and white checkered pattern approximated with alternating segments)
         segments = 6
-        segment_color_1 = carla.Color(255, 255, 255)  # White
-        segment_color_2 = carla.Color(255, 50, 50)    # Red
+        segment_color_1 = carla.Color(75, 75, 75)     # Dark gray
+        segment_color_2 = carla.Color(75, 15, 15)     # Dark red
         
         for i in range(segments):
             t1 = i / segments
@@ -6884,7 +6887,9 @@ class CameraImageProcessor:
         lifetime = 0.4
         radius = 1.0
         steps = 24
-        thickness = 0.1
+        # Scale line thickness based on camera height (thinner when zoomed in)
+        line_scale = max(0.5, min(1.5, self.camera_controller.height / 200.0))
+        thickness = 0.1 * line_scale
         refresh_interval = 0.25  # seconds
 
         for actor in self.spawned_vehicles:
@@ -7072,8 +7077,12 @@ class CameraImageProcessor:
             override_id is not None and self.waypoint_display_vehicle_id == override_id
         )
 
+        # Calculate line scale based on camera height (thinner when zoomed in close)
+        # Camera height ranges from 40 (close) to 1000 (far), baseline 200
+        line_scale = max(0.5, min(1.5, self.camera_controller.height / 200.0))
+
         # Draw connection lines first (so they appear behind markers)
-        self._draw_waypoint_connections_carla_debug_local(vehicle, start_point, waypoints, is_ego_path=is_ego_path)
+        self._draw_waypoint_connections_carla_debug_local(vehicle, start_point, waypoints, is_ego_path=is_ego_path, line_scale=line_scale)
         
         # Draw starting point marker if vehicle is hidden for scenario
         if start_point:
@@ -7083,17 +7092,17 @@ class CameraImageProcessor:
             self.world.debug.draw_point(
                 start_location,
                 size=0.5,
-                color=carla.Color(255, 0, 255),  # Magenta for starting point
+                color=carla.Color(150, 0, 150),  # Muted magenta for starting point
                 life_time=1.0
             )
-            
+
             # Draw "START" text above the marker
             text_location = carla.Location(start_point['x'], start_point['y'], start_point['z'] + 2.0)
             self.world.debug.draw_string(
                 text_location,
                 "START",
                 draw_shadow=True,
-                color=carla.Color(255, 0, 255),  # Magenta text
+                color=carla.Color(150, 0, 150),  # Muted magenta text
                 life_time=1.0,
                 persistent_lines=False
             )
@@ -7107,11 +7116,11 @@ class CameraImageProcessor:
                          hovered_waypoint[1] == i)
             is_finish_line = (i == len(waypoints) - 1)
             
-            # Choose colors based on waypoint properties and state
-            base_color = carla.Color(255, 215, 0) if is_ego_path else carla.Color(0, 255, 0)
-            selected_color = carla.Color(255, 255, 120) if is_ego_path else carla.Color(255, 255, 0)
-            hovered_color = carla.Color(255, 235, 150) if is_ego_path else carla.Color(255, 200, 0)
-            finish_color = carla.Color(255, 215, 0) if is_ego_path else carla.Color(255, 50, 50)
+            # Choose colors based on waypoint properties and state (muted colors for less glare)
+            base_color = carla.Color(150, 130, 0) if is_ego_path else carla.Color(0, 150, 0)
+            selected_color = carla.Color(150, 150, 70) if is_ego_path else carla.Color(150, 150, 0)
+            hovered_color = carla.Color(150, 140, 90) if is_ego_path else carla.Color(150, 120, 0)
+            finish_color = carla.Color(150, 130, 0) if is_ego_path else carla.Color(150, 30, 30)
                 
             # Modify color based on state
             if is_finish_line and not is_selected:
@@ -7129,7 +7138,7 @@ class CameraImageProcessor:
             # Draw different markers based on type
             if is_finish_line:
                 self._draw_finish_line_carla_debug_local(
-                    location, waypoints, i, is_selected, is_hovered, is_ego_path=is_ego_path
+                    location, waypoints, i, is_selected, is_hovered, is_ego_path=is_ego_path, line_scale=line_scale
                 )
             else:
                 # Draw main waypoint marker (slightly bigger for better visibility)
@@ -7147,7 +7156,7 @@ class CameraImageProcessor:
                     text_location,
                     str(i + 1),
                     draw_shadow=True,
-                    color=carla.Color(255, 255, 255),
+                    color=carla.Color(180, 180, 180),  # Slightly dimmed white for readability
                     life_time=self.waypoint_debug_lifetime,
                     persistent_lines=False
                 )
@@ -7160,9 +7169,9 @@ class CameraImageProcessor:
             return None
         return self.waypoint_hover_index
     
-    def _draw_waypoint_connections_carla_debug_local(self, vehicle, start_point, waypoints, *, is_ego_path=False):
+    def _draw_waypoint_connections_carla_debug_local(self, vehicle, start_point, waypoints, *, is_ego_path=False, line_scale=1.0):
         """Draw connection lines between waypoints using CARLA debug drawing"""
-        line_color = carla.Color(255, 215, 0) if is_ego_path else carla.Color(0, 255, 0)  # Gold for ego, green otherwise
+        line_color = carla.Color(75, 65, 0) if is_ego_path else carla.Color(0, 75, 0)  # Dark gold/green so markers stand out
         
         for i, waypoint in enumerate(waypoints):
             if i == 0:
@@ -7205,12 +7214,12 @@ class CameraImageProcessor:
                 self.world.debug.draw_line(
                     start_location,
                     end_location,
-                    thickness=0.1,
+                    thickness=0.1 * line_scale,
                     color=line_color,
                     life_time=self.waypoint_debug_lifetime
                 )
     
-    def _draw_finish_line_carla_debug_local(self, location, waypoints, waypoint_index, is_selected, is_hovered, *, is_ego_path=False):
+    def _draw_finish_line_carla_debug_local(self, location, waypoints, waypoint_index, is_selected, is_hovered, *, is_ego_path=False, line_scale=1.0):
         """Draw a finish line pattern for the last waypoint using CARLA debug drawing"""
         # Calculate trajectory direction for perpendicular orientation
         if waypoint_index > 0:
@@ -7230,7 +7239,7 @@ class CameraImageProcessor:
         
         # Finish line dimensions (balanced size for close and far zoom)
         line_length = 5.0 if is_selected or is_hovered else 4.0
-        line_thickness = 0.14 if is_selected or is_hovered else 0.1
+        line_thickness = (0.14 if is_selected or is_hovered else 0.1) * line_scale
         
         # Calculate finish line endpoints
         half_length = line_length / 2
@@ -7245,11 +7254,11 @@ class CameraImageProcessor:
         # Draw finish line (red and white checkered pattern approximated with alternating segments)
         segments = 6
         if is_ego_path:
-            segment_color_1 = carla.Color(255, 235, 150)  # Light gold
-            segment_color_2 = carla.Color(210, 170, 0)    # Deep gold
+            segment_color_1 = carla.Color(75, 70, 45)     # Dark light gold
+            segment_color_2 = carla.Color(60, 50, 0)      # Dark deep gold
         else:
-            segment_color_1 = carla.Color(255, 255, 255)  # White
-            segment_color_2 = carla.Color(255, 50, 50)    # Red
+            segment_color_1 = carla.Color(75, 75, 75)     # Dark gray
+            segment_color_2 = carla.Color(75, 15, 15)     # Dark red
         
         for i in range(segments):
             t1 = i / segments
@@ -13140,14 +13149,16 @@ class CameraImageProcessor:
         is_hovered = bool(self._is_personal_trigger_hovered(hover_selection, mouse_pos))
         if is_selected:
             marker_color = carla.Color(180, 180, 0)
-            circle_color = carla.Color(180, 140, 0)
+            circle_color = carla.Color(90, 70, 0)      # Dimmer so marker stands out
         elif is_hovered:
             marker_color = carla.Color(240, 240, 240)
-            circle_color = carla.Color(210, 210, 210)
+            circle_color = carla.Color(105, 105, 105)  # Dimmer so marker stands out
         else:
             marker_color = carla.Color(0, 120, 220)
-            circle_color = carla.Color(0, 100, 200)
+            circle_color = carla.Color(0, 50, 100)     # Dimmer so marker stands out
         radius_float = float(radius_value)
+        # Scale line thickness based on camera height
+        line_scale = max(0.5, min(1.5, self.camera_controller.height / 200.0))
 
         try:
             # Draw center marker
@@ -13185,7 +13196,7 @@ class CameraImageProcessor:
                 self.world.debug.draw_line(
                     point1,
                     point2,
-                    thickness=0.1,
+                    thickness=0.1 * line_scale,
                     color=circle_color,
                     life_time=lifetime,
                     persistent_lines=False,
