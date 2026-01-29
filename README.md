@@ -2,6 +2,8 @@
 
 A graphical tool for creating and editing driving scenarios for the CARLA Simulator.
 
+Click on the image to see tutorial video.
+
 [![Watch the video](https://img.youtube.com/vi/jaBjUwShg9Q/maxresdefault.jpg)](https://www.youtube.com/watch?v=jaBjUwShg9Q)
 
 ## Features
