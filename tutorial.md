@@ -2,6 +2,8 @@
 
 This is a short, beginner-friendly tutorial for `vse.py` (Visual Scenario Editor).
 
+Click on the image to see tutorial video
+
 [![Watch the video](https://img.youtube.com/vi/jaBjUwShg9Q/maxresdefault.jpg)](https://www.youtube.com/watch?v=jaBjUwShg9Q)
 
 ## What You Can Create
