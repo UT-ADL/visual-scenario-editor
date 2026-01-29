@@ -22,6 +22,7 @@ A graphical tool for creating and editing driving scenarios for the CARLA Simula
 - Python 3.8+
 - CARLA Simulator 0.9.15 (or compatible version)
 - CARLA ScenarioRunner
+- CARLA UT Lexus
 
 ### 1. Install CARLA Simulator
 
@@ -49,7 +50,12 @@ pip install -r scenario_runner/requirements.txt
 export SCENARIO_RUNNER_ROOT=$HOME/scenario_runner
 ```
 
-### 3. Configure PYTHONPATH Environment Variable
+### 3. Install CARLA UT Lexus
+
+Download and install [utlexus.tar.gz](https://github.com/UT-ADL/carla_lexus):
+
+
+### 4. Configure PYTHONPATH Environment Variable
 
 Set up the PYTHONPATH environment variable:
 
@@ -58,7 +64,7 @@ Set up the PYTHONPATH environment variable:
 export PYTHONPATH=$PYTHONPATH:$CARLA_ROOT/PythonAPI/carla/dist/carla-0.9.15-py3.7-linux-x86_64.egg
 ```
 
-### 4. Install VSE Dependencies
+### 5. Install VSE Dependencies
 
 ```bash
 pip install -r requirements.txt
