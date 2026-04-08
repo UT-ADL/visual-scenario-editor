@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.1.0] - 2026-04-08
+
+### Added
+- Ego vehicle now uses BehaviorAgent with Cautious, Normal, and Aggressive driving styles
+- Export to OpenSCENARIO (.xosc) via Scenario menu
+- NPC Agent dropdown in top bar (Simulated / Scripted) for choosing NPC vehicle driving mode
+- Global Trigger section in Triggers mode left panel
+
+### Changed
+- Set Agent button replaced with Agent Mode dropdown (Autopilot / Human / Custom); script path is remembered when switching modes, with a `...` button to change the Custom Agent script
+- NPC Agent driving modes: Simulated (BasicAgent, physics-based) is default; Scripted (SimpleVehicleControl, velocity-based) for deterministic paths
+- Camera following for external ego vehicle during playback with pan/zoom support (free-look with offset preservation, same as local ego)
+- Play button disabled when Custom Agent is selected without an external ego vehicle; dropdown is locked to Custom Agent while an external ego (Autoware Mini) is connected
+- Triggers mode left panel reorganized into two sections: Global Trigger (top) and Traffic Light Groups (bottom)
+- Editor placeholders are now separate from playback vehicles — saving always reads from stored placeholder positions, never from live actor transforms; saving is blocked during playback
+- Save confirmation dialogs now show three buttons: Save, Don't Save, and Cancel (previously Yes/No)
+- Exit dialog only appears when there are actual unsaved changes
+
+### Fixed
+- Agent mode not updating in UI when selecting script via Play-button prompt
+- BehaviorAgent crash due to missing waypoint attributes (is_junction, lane markings)
+- Keyboard control disabled during Autopilot playback
+- Toggling "Ignore Traffic Lights" / "Ignore Stop Signs" / "Ignore Vehicles" checkboxes now registers as a scene change (undo/redo support and unsaved-changes tracking)
+- Stopping a scenario now calls `cancel_route` service to clear the Autoware Mini global path, preventing the ego from continuing on a stale route
+
 ## [1.0.0] - 2026-01-26
 
 ### Added

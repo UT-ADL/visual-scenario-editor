@@ -115,6 +115,7 @@ from srunner.scenariomanager.scenarioatomics.atomic_criteria import (
     RunningStopTest,
     WrongLaneTest,
 )
+from srunner.scenariomanager.actorcontrols.simple_vehicle_control import SimpleVehicleControl
 from srunner.scenariomanager.timer import GameTime
 from srunner.scenarios.basic_scenario import BasicScenario
 from srunner.tools.route_manipulation import downsample_route, interpolate_trajectory
@@ -533,6 +534,19 @@ def get_ground_height(world, location, debug=False, cached_map=None, *, return_m
 # =============================================================================
 
 
+def _has_tile_files_on_disk(short_name: str) -> bool:
+    """Check if a map has _Tile_ .umap files on disk (indicates a large/tiled map)."""
+    carla_root = os.environ.get("CARLA_ROOT")
+    if not carla_root or not short_name:
+        return False
+    import glob as _glob
+    pattern = os.path.join(
+        carla_root, "CarlaUE4", "Content", "Carla", "Maps",
+        "**", f"{short_name}_Tile_*.umap",
+    )
+    return bool(_glob.glob(pattern, recursive=True))
+
+
 def _is_large_map(carla_map: Optional[carla.Map]) -> bool:
     """Heuristic: treat streaming/tiled and very large topology maps as 'large'."""
     if os.environ.get("VSE_FORCE_LARGE_MAP") == "1":
@@ -544,6 +558,10 @@ def _is_large_map(carla_map: Optional[carla.Map]) -> bool:
     except Exception:
         name = ""
     if "large" in name:
+        return True
+    # Check for tile files on disk (catches maps with sublevels like tallinn_demo)
+    short = name.split('/')[-1]
+    if short and _has_tile_files_on_disk(short):
         return True
     try:
         topo = carla_map.get_topology()
@@ -701,6 +719,14 @@ def _ros_plan_publisher_process(
 ) -> None:
     """Child process entry: publish a plan via a ScenarioRunner agent with a fresh ROS node."""
     parent_pid = os.getppid()
+
+    # Graceful shutdown: convert SIGTERM into a cooperative exit so the
+    # finally block can call cancel_route before the process dies.
+    _shutdown = threading.Event()
+    def _sigterm_handler(signum, frame):
+        _shutdown.set()
+    signal.signal(signal.SIGTERM, _sigterm_handler)
+
     agent_file = None
     try:
         agent_file = str(Path(agent_path).expanduser().resolve())
@@ -818,7 +844,7 @@ def _ros_plan_publisher_process(
             # latched Path message. This addresses first-run cases where an external
             # stack connects after the publish completes (otherwise only the final goal
             # may be observed).
-            while True:
+            while not _shutdown.is_set():
                 try:
                     current_ppid = os.getppid()
                     # Exit if parent died (ppid changed or became 1/init)
@@ -827,11 +853,18 @@ def _ros_plan_publisher_process(
                 except (OSError, AttributeError):
                     # Parent process no longer exists
                     break
-                # Shorter sleep for faster response to parent termination
-                time.sleep(0.1)
+                # Use Event.wait for instant wakeup on SIGTERM
+                _shutdown.wait(timeout=0.1)
         except Exception:
             pass
         finally:
+            # Cancel the active route by sending an empty plan to the agent.
+            # The agent handles calling /planning/cancel_route internally.
+            try:
+                agent.set_global_plan([], [])
+                print("[MiniRunner] Route cancelled via agent.set_global_plan([], [])")
+            except Exception as exc:
+                print(f"[MiniRunner] Could not cancel route: {exc}")
             try:
                 agent.destroy()
             except Exception:
@@ -1247,6 +1280,24 @@ def _refine_vehicle_route(
         radius = _compute_turn_radius_from_locations(prev_loc, route_point.transform.location, next_loc)
         capped_speeds.append(_cap_speed_for_radius(route_point.speed_kmh, radius, max_lat_acc))
 
+    # Backward pass: ensure the car can physically brake to each upcoming speed
+    max_decel = 6.0  # m/s^2
+    for i in range(len(points) - 2, -1, -1):
+        dist = points[i].transform.location.distance(points[i + 1].transform.location)
+        v_next_ms = capped_speeds[i + 1] / 3.6
+        v_max_kmh = math.sqrt(v_next_ms * v_next_ms + 2.0 * max_decel * dist) * 3.6
+        if capped_speeds[i] > v_max_kmh:
+            capped_speeds[i] = v_max_kmh
+
+    # Forward pass: limit speed recovery to physically achievable acceleration
+    max_accel = 4.0  # m/s^2
+    for i in range(1, len(points)):
+        dist = points[i - 1].transform.location.distance(points[i].transform.location)
+        v_prev_ms = capped_speeds[i - 1] / 3.6
+        v_max_kmh = math.sqrt(v_prev_ms * v_prev_ms + 2.0 * max_accel * dist) * 3.6
+        if capped_speeds[i] > v_max_kmh:
+            capped_speeds[i] = v_max_kmh
+
     new_points: List[RoutePoint] = []
     first_point = points[0]
     new_points.append(
@@ -1264,13 +1315,16 @@ def _refine_vehicle_route(
         curr_tf = points[idx].transform
         next_tf = points[idx + 1].transform
 
-        segment_speed = min(capped_speeds[idx], capped_speeds[idx + 1])
+        samples = _generate_arc_samples(prev_tf, curr_tf, next_tf, max_step)
         segment_deviation = points[idx].speed_deviation_kmh
-        for sample_tf in _generate_arc_samples(prev_tf, curr_tf, next_tf, max_step):
+        num_samples = len(samples)
+        for s_idx, sample_tf in enumerate(samples):
+            frac = (s_idx + 1) / (num_samples + 1)
+            sample_speed = capped_speeds[idx] + frac * (capped_speeds[idx + 1] - capped_speeds[idx])
             new_points.append(
                 RoutePoint(
                     transform=sample_tf,
-                    speed_kmh=segment_speed,
+                    speed_kmh=sample_speed,
                     idle_time_s=0.0,
                     is_destination=False,
                     speed_deviation_kmh=segment_deviation,
@@ -1401,9 +1455,13 @@ class VehicleController:
     def __init__(self, agent: BasicAgent, vehicle: carla.Actor, destination: carla.Location,
                  scenario: "vse_play", index: int, route_points: List[RoutePoint], initial_idle_time: float = 0.0,
                  destination_speed: Optional[float] = None, cruise_speed: Optional[float] = None,
-                 vehicle_trigger: Optional[VehicleTrigger] = None):
+                 vehicle_trigger: Optional[VehicleTrigger] = None,
+                 control_mode: str = "basic_agent"):
         self.agent = agent
         self.vehicle = vehicle
+        self.control_mode = control_mode
+        self._ignore_traffic_lights = False
+        self._svc = None  # SimpleVehicleControl instance (velocity mode only)
         self.destination = destination
         self.scenario = scenario
         self.index = index
@@ -1665,6 +1723,35 @@ class VehicleController:
             except Exception:
                 pass
 
+        # Wait for CarlaDataProvider to have a valid location (needs at least one world tick
+        # in sync mode). Without this, SVC.run_step() crashes with Location - NoneType when
+        # there is no trigger/idle to delay the controller thread.
+        if self.control_mode == "velocity":
+            loc_wait_start = time.monotonic()
+            while self._running and self._is_vehicle_valid() and self.scenario and self.scenario._keep_running:
+                if CarlaDataProvider.get_location(self.vehicle) is not None:
+                    break
+                if time.monotonic() - loc_wait_start > 5.0:
+                    logger.warning("VehicleController %d: timed out waiting for CDP location", self.index)
+                    break
+                time.sleep(self.SLEEP_INTERVAL)
+
+        # Initialize SimpleVehicleControl for deterministic mode
+        if self.control_mode == "velocity" and self.vehicle and self.vehicle.is_alive:
+            args = {
+                'consider_trafficlights': 'false' if self._ignore_traffic_lights else 'true',
+            }
+            self._svc = SimpleVehicleControl(self.vehicle, args=args)
+            # Build waypoint list as carla.Transform (what SimpleVehicleControl expects)
+            wp_transforms = []
+            for rp in self.waypoints:
+                wp_transforms.append(rp.transform)
+            # Add destination as final waypoint
+            wp_transforms.append(carla.Transform(self.destination))
+            self._svc.update_waypoints(wp_transforms)
+            cruise = self._resolve_cruise_speed()
+            self._svc.update_target_speed(cruise / 3.6)  # SVC expects m/s
+
         while not self._should_stop() and self._is_vehicle_valid():
             if self._done:
                 break
@@ -1679,52 +1766,70 @@ class VehicleController:
                 loc = self.vehicle.get_location()
                 current_speed = self._get_current_speed_kmh()
 
-                # Check each waypoint for speed changes and idle time
-                last_wp_index = len(self.waypoints) - 1
-                for i, wp in enumerate(self.waypoints):
-                    wp_loc = wp.transform.location
-                    distance = float(loc.distance(wp_loc))
-                    target_speed = self._resolve_waypoint_speed(i)
+                # Advance waypoint progression: from the current active waypoint,
+                # check if a NEARBY subsequent waypoint is now closer (car passed the active one)
+                # First find current active (first unreached)
+                active_wp_idx = None
+                for i in range(len(self.waypoints)):
+                    if not self._waypoint_reached[i]:
+                        active_wp_idx = i
+                        break
+
+                if active_wp_idx is not None:
+                    active_dist = float(loc.distance(self.waypoints[active_wp_idx].transform.location))
+                    # Check if we're close enough to mark reached
+                    if active_dist < self.WAYPOINT_REACHED_THRESHOLD:
+                        self._waypoint_reached[active_wp_idx] = True
+                    else:
+                        # Check if a subsequent waypoint is closer (car overshot/diverged)
+                        # Only look a limited window ahead to avoid jumping to distant waypoints
+                        scan_end = min(active_wp_idx + 15, len(self.waypoints))
+                        for j in range(active_wp_idx + 1, scan_end):
+                            j_dist = float(loc.distance(self.waypoints[j].transform.location))
+                            if j_dist < active_dist:
+                                # Car is closer to waypoint j than to active — mark all before j as reached
+                                for k in range(active_wp_idx, j):
+                                    self._waypoint_reached[k] = True
+                                active_dist = j_dist
+                                active_wp_idx = j
+                            else:
+                                break  # distances increasing, stop scanning
+
+                    # Re-find active after possible advancement
+                    active_wp_idx = None
+                    for i in range(len(self.waypoints)):
+                        if not self._waypoint_reached[i]:
+                            active_wp_idx = i
+                            break
+
+                if active_wp_idx is not None:
+                    wp = self.waypoints[active_wp_idx]
                     idle_time = wp.idle_time_s
 
-                    # Fixed detection radius for testing
-                    detection_radius = 10.0
-
-                    # Check if we're at a waypoint with idle time
-                    if distance < detection_radius and not self._waypoint_reached[i]:
-                        if idle_time > 0.0:
-                            # Waypoint with idle time: stop the vehicle
-                            self.agent.set_target_speed(0)
-                            self._waypoint_speeds_set[i] = True
-                            self._waypoint_reached[i] = True
-                            self._waypoint_idle_start[i] = GameTime.get_time()
-                        else:
-                            # Normal waypoint: just set the speed
-                            if not self._waypoint_speeds_set[i]:
-                                self.agent.set_target_speed(target_speed)
-                                self._waypoint_speeds_set[i] = True
-                            if distance < self.WAYPOINT_REACHED_THRESHOLD:
-                                self._waypoint_reached[i] = True
-
-                    # Handle idle waiting at waypoints
-                    if self._waypoint_reached[i] and not self._waypoint_idle_complete[i] and idle_time > 0.0:
-                        if self._waypoint_idle_start[i] is not None:
-                            elapsed = GameTime.get_time() - self._waypoint_idle_start[i]
-                            # Keep vehicle stopped during idle period
+                    # Handle idle waiting at this waypoint
+                    if idle_time > 0.0 and float(loc.distance(wp.transform.location)) < self.WAYPOINT_REACHED_THRESHOLD:
+                        if not self._waypoint_idle_start[active_wp_idx]:
+                            self._waypoint_idle_start[active_wp_idx] = GameTime.get_time()
+                        if not self._waypoint_idle_complete[active_wp_idx]:
+                            elapsed = GameTime.get_time() - self._waypoint_idle_start[active_wp_idx]
                             self.agent.set_target_speed(0)
                             if elapsed >= idle_time:
-                                # Idle time complete, resume with next waypoint's speed
-                                self._waypoint_idle_complete[i] = True
-                                # Set speed to next waypoint if available, else keep current
-                                if i + 1 < len(self.waypoints):
-                                    next_speed = self._resolve_waypoint_speed(i + 1)
-                                    resume_speed = next_speed
+                                self._waypoint_idle_complete[active_wp_idx] = True
+                                self._waypoint_reached[active_wp_idx] = True
+                                # Advance to next waypoint speed
+                                if active_wp_idx + 1 < len(self.waypoints):
+                                    resume_speed = self._resolve_waypoint_speed(active_wp_idx + 1)
                                     if resume_speed <= (self.STOPPED_SPEED * 3.6):
                                         resume_speed = self._resolve_destination_speed()
                                     self.agent.set_target_speed(resume_speed)
                                 else:
                                     self.agent.set_target_speed(self._resolve_cruise_speed())
                                     self._destination_speed_applied = False
+                        # Skip normal speed setting while idling
+                    else:
+                        # Normal waypoint: set speed to this waypoint's target
+                        target_speed = self._resolve_waypoint_speed(active_wp_idx)
+                        self.agent.set_target_speed(target_speed)
 
                 # Apply destination speed as we approach the final goal
                 destination_distance = float(loc.distance(self.destination))
@@ -1738,8 +1843,14 @@ class VehicleController:
 
                 # Apply control only if vehicle is still valid
                 if self._is_vehicle_valid():
-                    control = self.agent.run_step()
-                    self.vehicle.apply_control(control)
+                    if self.control_mode == "velocity" and self._svc:
+                        # Sync speed from agent (updated by waypoint logic above) to SVC
+                        speed_ms = getattr(self.agent, '_target_speed', 50.0) / 3.6
+                        self._svc.update_target_speed(speed_ms)
+                        self._svc.run_step()
+                    else:
+                        control = self.agent.run_step()
+                        self.vehicle.apply_control(control)
 
                 self._step_counter += 1
             except Exception as e:
@@ -1767,6 +1878,12 @@ class VehicleController:
             if self._thread.is_alive():
                 logger.warning("VehicleController %d thread did not stop within 5s timeout",
                               self.index)
+        if self._svc:
+            try:
+                self._svc.reset()
+            except Exception:
+                pass
+            self._svc = None
         self._apply_hold()
 
     def is_finished(self) -> bool:
@@ -2972,9 +3089,10 @@ class VehicleLightsBehavior(py_trees.behaviour.Behaviour):
 
 class vse_play(BasicScenario):
     def __init__(self, world, ego_vehicles, config, randomize=False, debug_mode=False,
-                 criteria_enable=True, timeout=18000):
+                 criteria_enable=True, timeout=18000, vehicle_control_mode=None):
         global _current_scenario
 
+        self._vehicle_control_mode_override = vehicle_control_mode
         self.timeout = timeout
         # Keep reference to the incoming config for downstream helpers that expect it.
         self.config = config
@@ -3126,7 +3244,30 @@ class vse_play(BasicScenario):
             print(f"[TRIGGER] Loaded trigger at ({self._trigger_data['x']:.2f}, {self._trigger_data['y']:.2f}, {self._trigger_data['z']:.2f}) with radius {self._trigger_data['radius']:.2f}m")
             print(f"[TRIGGER] Scenario will start when ego vehicle enters trigger zone")
         else:
-            print("[TRIGGER] No trigger found - scenario will start immediately")
+            print("[TRIGGER] No trigger found in scenario data")
+
+        # Enable trigger mode when ego vehicle is present, so NPCs without
+        # personal triggers must wait for a global trigger (and never activate
+        # if no global trigger exists in the scene).
+        ego_entry = data.get("ego_vehicle")
+        if not ego_entry:
+            for entry in data.get("vehicles", []):
+                if str(entry.get("role", "")).lower() == "ego_vehicle":
+                    ego_entry = entry
+                    break
+        if ego_entry and not self._trigger_mode:
+            self._trigger_mode = True
+            print("[TRIGGER] Ego vehicle present - NPCs require triggers to activate")
+
+        if not self._trigger_mode:
+            print("[TRIGGER] No ego vehicle - scenario will start immediately")
+
+        if self._vehicle_control_mode_override is not None:
+            self.vehicle_control_mode = self._vehicle_control_mode_override
+        else:
+            self.vehicle_control_mode = data.get('vehicle_control_mode', 'basic_agent')
+        if self.vehicle_control_mode != 'basic_agent':
+            print(f"[NPC Control] Mode: {self.vehicle_control_mode}")
 
     def _load_config_from_json(self) -> None:
         for idx, actor in enumerate(self._raw_pedestrian_entries):
@@ -3331,6 +3472,18 @@ class vse_play(BasicScenario):
             max_lat_acc = float(entry.get("max_lat_acc", 3.0) or 3.0)
             if max_lat_acc <= 0.0:
                 max_lat_acc = 3.0
+
+            # Insert spawn as first route point for proper speed profiling
+            initial_speed = entry.get("speed_km_h", 30.0)
+            route_points.append(
+                RoutePoint(
+                    transform=carla.Transform(spawn_location, spawn_rotation),
+                    speed_kmh=initial_speed,
+                    idle_time_s=0.0,
+                    is_destination=False,
+                    speed_deviation_kmh=0,
+                )
+            )
 
             for wp in entry.get("waypoints", []):
                 wp_loc = wp["location"]
@@ -4065,7 +4218,9 @@ class vse_play(BasicScenario):
                 destination_speed=data.destination_speed,
                 cruise_speed=data.initial_speed,
                 vehicle_trigger=self._vehicle_triggers[idx] if idx < len(self._vehicle_triggers) else None,
+                control_mode=self.vehicle_control_mode,
             )
+            controller._ignore_traffic_lights = data.ignore_traffic_lights
             self._vehicle_controllers.append(controller)
             controller.start()
 
@@ -4117,11 +4272,21 @@ class vse_play(BasicScenario):
 
     def _setup_vehicle_route(self, agent: BasicAgent, vehicle: carla.Actor, data: VehicleData) -> None:
         class WP:
-            """Lightweight waypoint wrapper for BasicAgent routes."""
+            """Lightweight waypoint wrapper for BasicAgent/BehaviorAgent routes."""
+            class _LaneMarking:
+                lane_change = carla.LaneChange.NONE
             def __init__(self, transform: carla.Transform):
                 self.transform = transform
-                self.road_id = 0  # Placeholder for BasicAgent compatibility
-                self.lane_id = 0  # Placeholder for BasicAgent compatibility
+                self.road_id = 0
+                self.lane_id = 0
+                self.is_junction = False
+                self.lane_type = carla.LaneType.Driving
+                self.left_lane_marking = WP._LaneMarking()
+                self.right_lane_marking = WP._LaneMarking()
+            def get_left_lane(self):
+                return None
+            def get_right_lane(self):
+                return None
 
         try:
             vehicle_loc = vehicle.get_location()
@@ -5210,6 +5375,9 @@ class MiniRunner:
         on_finish=None,
         ros_publish_delay: float = 1.5,
         agent_path: Optional[str] = None,
+        agent_mode: str = "autopilot",
+        agent_behavior: str = "normal",
+        vehicle_control_mode: str = "basic_agent",
     ):
         self.client = client
         self.world = world
@@ -5225,6 +5393,9 @@ class MiniRunner:
         self.on_finish = on_finish
         self.ros_publish_delay = max(0.0, float(ros_publish_delay))
         self.agent_path = agent_path
+        self.agent_mode = agent_mode if agent_mode in ("autopilot", "human", "custom") else "autopilot"
+        self.agent_behavior = agent_behavior if agent_behavior in ("cautious", "normal", "aggressive") else "normal"
+        self.vehicle_control_mode = vehicle_control_mode if vehicle_control_mode in ("basic_agent", "velocity") else "basic_agent"
         try:
             self.ros_goal_interval = max(0.0, float(os.environ.get("VSE_GOAL_INTERVAL", "0.25")))
         except Exception:
@@ -5297,7 +5468,7 @@ class MiniRunner:
             self._diag("start: thread already alive")
             return
 
-        if self.tick_mode == "ros":
+        if self.tick_mode == "ros" and self.wait_for_ego:
             if not self.agent_path:
                 self.log("External ego tick-mode is 'ros' but no --agent was provided; aborting.")
                 return
@@ -5481,6 +5652,7 @@ class MiniRunner:
             debug_mode=self.debug,
             criteria_enable=True,
             timeout=self.timeout_s,
+            vehicle_control_mode=self.vehicle_control_mode,
         )
         self._diag("run: build-scenario vse_play init done")
         # Set ego destination from JSON waypoint data for arrival detection
@@ -6045,6 +6217,16 @@ class MiniRunner:
             return _normalize_yaw(math.degrees(math.atan2(dy, dx)))
 
         route_points: List[RoutePoint] = []
+        # Insert spawn as first route point for proper speed profiling
+        route_points.append(
+            RoutePoint(
+                transform=carla.Transform(spawn_location, spawn_rotation),
+                speed_kmh=default_speed,
+                idle_time_s=float(ego_entry.get("idle_time_s", 0.0) or 0.0),
+                is_destination=False,
+                speed_deviation_kmh=0,
+            )
+        )
         destination_loc: Optional[carla.Location] = None
         for idx, wp in enumerate(waypoints_data):
             wp_loc = wp.get("location", {})
@@ -6094,21 +6276,6 @@ class MiniRunner:
             )
             if is_dest:
                 destination_loc = transform.location
-
-        # If only a single destination is provided, prepend the spawn pose as the start.
-        if len(route_points) == 1:
-            spawn_tf = carla.Transform(spawn_location, spawn_rotation)
-            start_speed = route_points[0].speed_kmh if route_points else default_speed
-            route_points.insert(
-                0,
-                RoutePoint(
-                    transform=spawn_tf,
-                    speed_kmh=start_speed,
-                    idle_time_s=float(ego_entry.get("idle_time_s", 0.0) or 0.0),
-                    is_destination=False,
-                    speed_deviation_kmh=0,
-                ),
-            )
 
         # Ensure last waypoint is treated as destination if none flagged
         if route_points and destination_loc is None:
@@ -6289,23 +6456,14 @@ class MiniRunner:
         """Launch a VehicleController for the ego in own-tick mode."""
         if not ego_actor or not vehicle_data or not self.world or not self._scenario:
             return None
+
+        # Human mode: skip autopilot entirely; manual keyboard control only
+        if self.agent_mode == "human":
+            self.log("Ego agent mode: human — autopilot disabled, keyboard control only.")
+            return None
+
         try:
-            try:
-                agent = BasicAgent(
-                    ego_actor,
-                    target_speed=vehicle_data.initial_speed,
-                    map_inst=self.world.get_map(),
-                    grp_inst=_NoopGlobalRoutePlanner(),
-                )
-            except Exception:
-                try:
-                    agent = BasicAgent(
-                        ego_actor,
-                        target_speed=vehicle_data.initial_speed,
-                        grp_inst=_NoopGlobalRoutePlanner(),
-                    )
-                except Exception:
-                    agent = BasicAgent(ego_actor, target_speed=vehicle_data.initial_speed)
+            agent = self._create_ego_agent(ego_actor, vehicle_data)
             agent.ignore_traffic_lights(vehicle_data.ignore_traffic_lights)
             agent.ignore_stop_signs(vehicle_data.ignore_stop_signs)
             agent.ignore_vehicles(vehicle_data.ignore_vehicles)
@@ -6331,6 +6489,54 @@ class MiniRunner:
         except Exception as exc:
             self.log(f"Failed to start internal ego controller: {exc}")
             return None
+
+    def _create_ego_agent(self, ego_actor: carla.Actor, vehicle_data: VehicleData):
+        """Create the appropriate agent for the ego vehicle based on agent_mode/agent_behavior."""
+        # Try BehaviorAgent first (when in autopilot mode)
+        if self.agent_mode == "autopilot":
+            try:
+                from agents.navigation.behavior_agent import BehaviorAgent
+                behavior = self.agent_behavior  # "cautious", "normal", or "aggressive"
+                try:
+                    agent = BehaviorAgent(
+                        ego_actor,
+                        behavior=behavior,
+                        map_inst=self.world.get_map(),
+                        grp_inst=_NoopGlobalRoutePlanner(),
+                    )
+                except Exception:
+                    try:
+                        agent = BehaviorAgent(
+                            ego_actor,
+                            behavior=behavior,
+                            grp_inst=_NoopGlobalRoutePlanner(),
+                        )
+                    except Exception:
+                        agent = BehaviorAgent(ego_actor, behavior=behavior)
+                self.log(f"Ego agent: BehaviorAgent (behavior={behavior})")
+                return agent
+            except ImportError:
+                self.log("BehaviorAgent not available; falling back to BasicAgent.")
+
+        # Fallback to BasicAgent
+        try:
+            agent = BasicAgent(
+                ego_actor,
+                target_speed=vehicle_data.initial_speed,
+                map_inst=self.world.get_map(),
+                grp_inst=_NoopGlobalRoutePlanner(),
+            )
+        except Exception:
+            try:
+                agent = BasicAgent(
+                    ego_actor,
+                    target_speed=vehicle_data.initial_speed,
+                    grp_inst=_NoopGlobalRoutePlanner(),
+                )
+            except Exception:
+                agent = BasicAgent(ego_actor, target_speed=vehicle_data.initial_speed)
+        self.log("Ego agent: BasicAgent (fallback)")
+        return agent
 
     def _check_ego_arrival(self, scenario_ref: "vse_play", return_distance: bool = False) -> Tuple[bool, float]:
         """Check if the external ego has reached the destination."""

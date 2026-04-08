@@ -1,0 +1,1046 @@
+{
+  "vehicles": [
+    {
+      "id": 187,
+      "type": "vehicle.tesla.cybertruck",
+      "location": {
+        "x": 144.28689575195312,
+        "y": 434.4444885253906,
+        "z": 34.79647445678711
+      },
+      "rotation": {
+        "pitch": 0.0,
+        "yaw": 56.586612701416016,
+        "roll": 0.0
+      },
+      "speed_km_h": 50.0,
+      "idle_time_s": 0.0,
+      "waypoints": [
+        {
+          "index": 1,
+          "location": {
+            "x": 170.33676147460938,
+            "y": 474.2215270996094,
+            "z": 34.676387786865234
+          },
+          "yaw": 56.70943832397461,
+          "speed_km_h": 100.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "turn_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 2,
+          "location": {
+            "x": 184.3705596923828,
+            "y": 495.51531982421875,
+            "z": 34.79982376098633
+          },
+          "yaw": 56.83481216430664,
+          "speed_km_h": 100.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "turn_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 3,
+          "location": {
+            "x": 196.9507598876953,
+            "y": 514.7879638671875,
+            "z": 34.76376724243164
+          },
+          "yaw": 56.66796875,
+          "speed_km_h": 100.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "turn_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 4,
+          "location": {
+            "x": 207.6497344970703,
+            "y": 531.0318603515625,
+            "z": 34.522850036621094
+          },
+          "yaw": 56.57265853881836,
+          "speed_km_h": 100.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "turn_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 5,
+          "location": {
+            "x": 214.28265380859375,
+            "y": 541.0879516601562,
+            "z": 34.50599670410156
+          },
+          "yaw": 56.6182861328125,
+          "speed_km_h": 100.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "turn_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 6,
+          "location": {
+            "x": 222.2140350341797,
+            "y": 551.922119140625,
+            "z": 34.65064239501953
+          },
+          "yaw": 42.95484161376953,
+          "speed_km_h": 100.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "turn_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 7,
+          "location": {
+            "x": 226.7109375,
+            "y": 553.7088623046875,
+            "z": 34.668025970458984
+          },
+          "yaw": 0.34064891934394836,
+          "speed_km_h": 100.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "turn_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 8,
+          "location": {
+            "x": 232.22373962402344,
+            "y": 551.8624267578125,
+            "z": 34.52630615234375
+          },
+          "yaw": -30.918027877807617,
+          "speed_km_h": 100.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "turn_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 9,
+          "location": {
+            "x": 235.51889038085938,
+            "y": 548.4819946289062,
+            "z": 34.386444091796875
+          },
+          "yaw": -58.6895866394043,
+          "speed_km_h": 100.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "turn_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 10,
+          "location": {
+            "x": 237.45895385742188,
+            "y": 543.3712768554688,
+            "z": 34.14585876464844
+          },
+          "yaw": -81.06143188476562,
+          "speed_km_h": 100.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "turn_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 11,
+          "location": {
+            "x": 237.67613220214844,
+            "y": 536.3379516601562,
+            "z": 33.996700286865234
+          },
+          "yaw": -110.2036361694336,
+          "speed_km_h": 100.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "turn_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 12,
+          "location": {
+            "x": 235.94216918945312,
+            "y": 531.6713256835938,
+            "z": 33.92380905151367
+          },
+          "yaw": -110.93639373779297,
+          "speed_km_h": 100.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "turn_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 13,
+          "location": {
+            "x": 232.94418334960938,
+            "y": 525.2005004882812,
+            "z": 33.819705963134766
+          },
+          "yaw": -119.2293472290039,
+          "speed_km_h": 100.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "turn_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 14,
+          "location": {
+            "x": 230.58126831054688,
+            "y": 521.5374755859375,
+            "z": 33.760467529296875
+          },
+          "yaw": -123.54259490966797,
+          "speed_km_h": 100.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "turn_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 15,
+          "location": {
+            "x": 225.83834838867188,
+            "y": 514.384765625,
+            "z": 33.88388442993164
+          },
+          "yaw": -123.52960968017578,
+          "speed_km_h": 100.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "turn_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 16,
+          "location": {
+            "x": 220.4461212158203,
+            "y": 500.462890625,
+            "z": 34.01620864868164
+          },
+          "yaw": -123.64195251464844,
+          "speed_km_h": 100.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "turn_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 17,
+          "location": {
+            "x": 214.8116455078125,
+            "y": 486.12615966796875,
+            "z": 34.142208099365234
+          },
+          "yaw": -123.8026123046875,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "turn_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 18,
+          "location": {
+            "x": 202.4968719482422,
+            "y": 467.7049560546875,
+            "z": 34.24169921875
+          },
+          "yaw": -123.64290618896484,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "turn_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 19,
+          "location": {
+            "x": 195.20944213867188,
+            "y": 456.7911071777344,
+            "z": 34.30134582519531
+          },
+          "yaw": -123.62718200683594,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "turn_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 20,
+          "location": {
+            "x": 186.91250610351562,
+            "y": 444.2907409667969,
+            "z": 34.30988311767578
+          },
+          "yaw": -123.7260971069336,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "turn_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 21,
+          "location": {
+            "x": 182.15213012695312,
+            "y": 437.08465576171875,
+            "z": 34.30999755859375
+          },
+          "yaw": -122.37639617919922,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "turn_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 22,
+          "location": {
+            "x": 179.02407836914062,
+            "y": 430.59619140625,
+            "z": 34.30999755859375
+          },
+          "yaw": -103.90168762207031,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "turn_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 23,
+          "location": {
+            "x": 178.5914306640625,
+            "y": 425.6269836425781,
+            "z": 34.27792739868164
+          },
+          "yaw": -87.43663787841797,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "turn_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 24,
+          "location": {
+            "x": 180.69422912597656,
+            "y": 419.8522644042969,
+            "z": 34.202598571777344
+          },
+          "yaw": -52.495521545410156,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "turn_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 25,
+          "location": {
+            "x": 185.26060485839844,
+            "y": 415.8548583984375,
+            "z": 34.164451599121094
+          },
+          "yaw": 320.13726806640625,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "turn_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 26,
+          "location": {
+            "x": 192.3103790283203,
+            "y": 410.7387390136719,
+            "z": 34.10515594482422
+          },
+          "yaw": 328.186279296875,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "turn_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 27,
+          "location": {
+            "x": 205.615234375,
+            "y": 403.59259033203125,
+            "z": 34.08001708984375
+          },
+          "yaw": 334.1387634277344,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "turn_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 28,
+          "location": {
+            "x": 223.89883422851562,
+            "y": 394.9016418457031,
+            "z": 34.29484176635742
+          },
+          "yaw": 335.2138671875,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "turn_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": "destination",
+          "location": {
+            "x": 245.72149658203125,
+            "y": 384.69866943359375,
+            "z": 33.91316223144531
+          },
+          "yaw": 334.7459716796875,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "turn_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": true
+        }
+      ],
+      "ignore_traffic_lights": true,
+      "ignore_stop_signs": true,
+      "ignore_vehicles": true,
+      "max_lat_acc": 3000.0,
+      "destination_speed_km_h": 50.0,
+      "trigger": {
+        "center": {
+          "x": 145.35048786409968,
+          "y": 443.01830623405516,
+          "z": 35.81015396118164
+        },
+        "radius": 2.0
+      }
+    }
+  ],
+  "timestamp": 1772366673.7982788,
+  "map_name": "tartu_demo",
+  "ego_vehicle": {
+    "type": "vehicle.lexus.utlexus",
+    "location": {
+      "x": 144.1938934326172,
+      "y": 440.9364318847656,
+      "z": 35.094749450683594
+    },
+    "rotation": {
+      "pitch": 0.0,
+      "yaw": 55.36095428466797,
+      "roll": 0.0
+    },
+    "role": "ego_vehicle",
+    "ignore_traffic_lights": false,
+    "ignore_stop_signs": false,
+    "ignore_vehicles": true,
+    "max_lat_acc": 3.0
+  },
+  "traffic_light_triggers": [
+    {
+      "center": {
+        "x": 26.121476232368945,
+        "y": 158.96139061942466,
+        "z": 33.89999771118164
+      },
+      "radius": 6.0,
+      "ids_live": [
+        8
+      ],
+      "ids_reference": [
+        8
+      ],
+      "fingerprint": [
+        [
+          220,
+          962,
+          147
+        ]
+      ],
+      "sequence": [
+        {
+          "color": "Yellow",
+          "duration_s": 30.0,
+          "duration_ticks": 600
+        },
+        {
+          "color": "Green",
+          "duration_s": 600.0,
+          "duration_ticks": 12000
+        }
+      ]
+    },
+    {
+      "center": {
+        "x": 26.091968148876852,
+        "y": 158.96462115334896,
+        "z": 33.90382766723633
+      },
+      "radius": 6.0,
+      "ids_live": [
+        9,
+        10
+      ],
+      "ids_reference": [
+        9,
+        10
+      ],
+      "fingerprint": [
+        [
+          254,
+          951,
+          147
+        ],
+        [
+          273,
+          1047,
+          162
+        ]
+      ],
+      "sequence": [
+        {
+          "color": "Yellow",
+          "duration_s": 30.0,
+          "duration_ticks": 600
+        },
+        {
+          "color": "Green",
+          "duration_s": 600.0,
+          "duration_ticks": 12000
+        }
+      ]
+    },
+    {
+      "center": {
+        "x": 82.50124762794489,
+        "y": 298.5631500110213,
+        "z": 34.004295349121094
+      },
+      "radius": 6.0,
+      "ids_live": [
+        23,
+        24
+      ],
+      "ids_reference": [
+        23,
+        24
+      ],
+      "fingerprint": [
+        [
+          441,
+          1449,
+          164
+        ],
+        [
+          456,
+          1443,
+          150
+        ]
+      ],
+      "sequence": [
+        {
+          "color": "Red",
+          "duration_s": 15.0,
+          "duration_ticks": 300
+        },
+        {
+          "color": "Green",
+          "duration_s": 20.0,
+          "duration_ticks": 400
+        }
+      ]
+    },
+    {
+      "center": {
+        "x": 118.29627194386822,
+        "y": 385.6569640208555,
+        "z": 34.65171813964844
+      },
+      "radius": 6.0,
+      "ids_live": [
+        35,
+        36
+      ],
+      "ids_reference": [
+        35,
+        36
+      ],
+      "fingerprint": [
+        [
+          547,
+          1695,
+          162
+        ],
+        [
+          566,
+          1685,
+          149
+        ]
+      ],
+      "sequence": [
+        {
+          "color": "Red",
+          "duration_s": 10.0,
+          "duration_ticks": 200
+        },
+        {
+          "color": "Green",
+          "duration_s": 10.0,
+          "duration_ticks": 200
+        }
+      ]
+    },
+    {
+      "center": {
+        "x": 82.46690499883495,
+        "y": 298.57187598279666,
+        "z": 34.004276275634766
+      },
+      "radius": 6.0,
+      "ids_live": [
+        22
+      ],
+      "ids_reference": [
+        22
+      ],
+      "fingerprint": [
+        [
+          412,
+          1440,
+          149
+        ]
+      ],
+      "sequence": [
+        {
+          "color": "Red",
+          "duration_s": 15.0,
+          "duration_ticks": 300
+        },
+        {
+          "color": "Green",
+          "duration_s": 20.0,
+          "duration_ticks": 400
+        }
+      ]
+    },
+    {
+      "center": {
+        "x": 118.27408599853516,
+        "y": 385.6380310058594,
+        "z": 34.654823303222656
+      },
+      "radius": 6.0,
+      "ids_live": [
+        34
+      ],
+      "ids_reference": [
+        34
+      ],
+      "fingerprint": [
+        [
+          525,
+          1707,
+          149
+        ]
+      ],
+      "sequence": [
+        {
+          "color": "Red",
+          "duration_s": 10.0,
+          "duration_ticks": 200
+        },
+        {
+          "color": "Green",
+          "duration_s": 10.0,
+          "duration_ticks": 200
+        }
+      ]
+    },
+    {
+      "center": {
+        "x": 211.01547214386525,
+        "y": 761.7826538930718,
+        "z": 36.7233772277832
+      },
+      "radius": 6.0,
+      "ids_live": [
+        42,
+        52
+      ],
+      "ids_reference": [
+        42,
+        52
+      ],
+      "fingerprint": [
+        [
+          625,
+          3195,
+          150
+        ],
+        [
+          628,
+          3226,
+          150
+        ]
+      ],
+      "sequence": [
+        {
+          "color": "Green",
+          "duration_s": 60.0,
+          "duration_ticks": 1200
+        }
+      ]
+    },
+    {
+      "center": {
+        "x": 211.01937872772092,
+        "y": 761.7767948380219,
+        "z": 36.723358154296875
+      },
+      "radius": 6.0,
+      "ids_live": [
+        44,
+        45
+      ],
+      "ids_reference": [
+        44,
+        45
+      ],
+      "fingerprint": [
+        [
+          534,
+          3189,
+          150
+        ],
+        [
+          562,
+          3166,
+          150
+        ]
+      ],
+      "sequence": [
+        {
+          "color": "Green",
+          "duration_s": 60.0,
+          "duration_ticks": 1200
+        }
+      ]
+    },
+    {
+      "center": {
+        "x": 130.4503819971927,
+        "y": 785.8473367907245,
+        "z": 34.939998626708984
+      },
+      "radius": 6.0,
+      "ids_live": [
+        95,
+        96,
+        97,
+        102
+      ],
+      "ids_reference": [
+        95,
+        96,
+        97,
+        102
+      ],
+      "fingerprint": [
+        [
+          276,
+          2907,
+          155
+        ],
+        [
+          354,
+          2997,
+          153
+        ],
+        [
+          371,
+          2982,
+          166
+        ],
+        [
+          387,
+          2967,
+          153
+        ]
+      ],
+      "sequence": [
+        {
+          "color": "Green",
+          "duration_s": 30.0,
+          "duration_ticks": 600
+        }
+      ]
+    },
+    {
+      "center": {
+        "x": 4.933588437693587,
+        "y": 646.2338314817429,
+        "z": 35.67298889160156
+      },
+      "radius": 6.0,
+      "ids_live": [
+        110,
+        111,
+        112
+      ],
+      "ids_reference": [
+        110,
+        111,
+        112
+      ],
+      "fingerprint": [
+        [
+          -330,
+          2075,
+          152
+        ],
+        [
+          -309,
+          2067,
+          164
+        ],
+        [
+          -258,
+          2141,
+          152
+        ]
+      ],
+      "sequence": [
+        {
+          "color": "Green",
+          "duration_s": 180.0,
+          "duration_ticks": 3600
+        }
+      ]
+    },
+    {
+      "center": {
+        "x": -156.5548095708558,
+        "y": 216.47637811934464,
+        "z": 34.47370910644531
+      },
+      "radius": 3.0,
+      "ids_live": [
+        150,
+        151
+      ],
+      "ids_reference": [
+        150,
+        151
+      ],
+      "fingerprint": [
+        [
+          -699,
+          475,
+          165
+        ],
+        [
+          -679,
+          489,
+          150
+        ]
+      ],
+      "sequence": [
+        {
+          "color": "Red",
+          "duration_s": 18.0,
+          "duration_ticks": 360
+        },
+        {
+          "color": "Green",
+          "duration_s": 60.0,
+          "duration_ticks": 1200
+        }
+      ]
+    },
+    {
+      "center": {
+        "x": -174.1999555827906,
+        "y": 119.27569501320059,
+        "z": 34.66001892089844
+      },
+      "radius": 6.0,
+      "ids_live": [
+        133
+      ],
+      "ids_reference": [
+        133
+      ],
+      "fingerprint": [
+        [
+          -642,
+          278,
+          156
+        ]
+      ],
+      "sequence": [
+        {
+          "color": "Green",
+          "duration_s": 60.0,
+          "duration_ticks": 1200
+        }
+      ]
+    },
+    {
+      "center": {
+        "x": -174.19937133789062,
+        "y": 119.27295684814453,
+        "z": 34.66001892089844
+      },
+      "radius": 2.0,
+      "ids_live": [
+        136,
+        149
+      ],
+      "ids_reference": [
+        136,
+        149
+      ],
+      "fingerprint": [
+        [
+          -674,
+          269,
+          167
+        ],
+        [
+          -673,
+          207,
+          155
+        ]
+      ],
+      "sequence": [
+        {
+          "color": "Green",
+          "duration_s": 60.0,
+          "duration_ticks": 1200
+        }
+      ]
+    },
+    {
+      "center": {
+        "x": 5.214141305283672,
+        "y": 645.984461486196,
+        "z": 35.67294692993164
+      },
+      "radius": 6.4,
+      "ids_live": [
+        113,
+        114,
+        115
+      ],
+      "ids_reference": [
+        113,
+        114,
+        115
+      ],
+      "fingerprint": [
+        [
+          -330,
+          2074,
+          152
+        ],
+        [
+          -309,
+          2066,
+          164
+        ],
+        [
+          -258,
+          2140,
+          152
+        ]
+      ]
+    }
+  ],
+  "weather_keyframes": [
+    {
+      "route_percentage": 0.0,
+      "cloudiness": 30.0,
+      "precipitation": 0.0,
+      "precipitation_deposits": 0.0,
+      "wind_intensity": 30.0,
+      "sun_azimuth_angle": 360.0,
+      "sun_altitude_angle": 60.0,
+      "fog_density": 0.0,
+      "fog_distance": 0.0,
+      "fog_falloff": 0.20000000298023224,
+      "wetness": 0.0,
+      "scattering_intensity": 0.0,
+      "mie_scattering_scale": 0.0,
+      "rayleigh_scattering_scale": 0.03310000151395798,
+      "dust_storm": 0.0
+    },
+    {
+      "route_percentage": 100.0,
+      "cloudiness": 30.0,
+      "precipitation": 0.0,
+      "precipitation_deposits": 0.0,
+      "wind_intensity": 30.0,
+      "sun_azimuth_angle": 360.0,
+      "sun_altitude_angle": 60.0,
+      "fog_density": 0.0,
+      "fog_distance": 0.0,
+      "fog_falloff": 0.20000000298023224,
+      "wetness": 0.0,
+      "scattering_intensity": 0.0,
+      "mie_scattering_scale": 0.0,
+      "rayleigh_scattering_scale": 0.03310000151395798,
+      "dust_storm": 0.0
+    }
+  ]
+}

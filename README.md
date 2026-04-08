@@ -2,9 +2,7 @@
 
 A graphical tool for creating and editing driving scenarios for the CARLA Simulator.
 
-Click on the image to see tutorial video.
-
-[![Watch the video](https://img.youtube.com/vi/jaBjUwShg9Q/maxresdefault.jpg)](https://www.youtube.com/watch?v=jaBjUwShg9Q)
+[![Watch the video](https://i.imgur.com/JQU4g6Z.jpeg)](https://www.youtube.com/watch?v=jaBjUwShg9Q)
 
 ## Features
 
@@ -85,9 +83,16 @@ export PYTHONPATH=$PYTHONPATH:$CARLA_ROOT/PythonAPI/carla/dist/carla-0.9.15-py3.
 
 ## Usage
 
+[![Watch the video](https://i.imgur.com/FaeVRuc.png)](https://www.youtube.com/watch?v=kjzwnp27A2o)
+
 Launch the editor:
 ```bash
 python vse.py
+```
+
+Run a saved scenario using VSE:
+```bash
+Open scenario.json file in VSE and press Play button
 ```
 
 Run a saved scenario on existing Carla server:

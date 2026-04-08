@@ -2,9 +2,13 @@
 
 This is a short, beginner-friendly tutorial for `vse.py` (Visual Scenario Editor).
 
-Click on the image to see tutorial video
+#### Creating Scenarios
 
-[![Watch the video](https://img.youtube.com/vi/jaBjUwShg9Q/maxresdefault.jpg)](https://www.youtube.com/watch?v=jaBjUwShg9Q)
+[![Watch the video](https://i.imgur.com/JQU4g6Z.jpeg)](https://www.youtube.com/watch?v=jaBjUwShg9Q)
+
+#### Playing Scenarios
+
+[![Watch the video](https://i.imgur.com/FaeVRuc.png)](https://www.youtube.com/watch?v=kjzwnp27A2o)
 
 ## What You Can Create
 
@@ -49,7 +53,7 @@ Tips:
 
 Expect:
 - A visible waypoint/path for the ego.
-- During playback, VSE will drive the ego automatically when it has a route.
+- During playback, the ego is driven according to the **Agent Mode** setting (default: CARLA Autopilot).
 
 ### 3) Add at least one NPC vehicle with a route
 
@@ -173,17 +177,39 @@ Editing:
 - **Low FPS with an agent-controlled ego**: set **Stream resolution** (top bar) to **No Camera** to disable the camera stream (often improves FPS).
 - **No camera frames / editor looks frozen**: try enabling **Drive Clock** in the top bar if the world is in synchronous mode.
 
-## Optional: Agent-Controlled Ego (Set Agent)
+## Optional: Choose How the Ego is Driven (Agent Mode)
 
-If you are running playback with an **agent-controlled ego**, pick the agent file in VSE:
+In the top bar (left of **Play**), click the **Agent** dropdown:
 
-1) In the top bar (near **Play**), click **Set Agent**.
-2) In the **Select Agent** dialog, choose your agent `.py` file and click **Select**.
-3) To remove it later, click **Clear Agent**.
+- **CARLA Autopilot** (default): Drives automatically. Pick a driving style: Cautious, Normal, or Aggressive.
+- **Human Control**: You drive with arrow keys.
+- **Custom Agent**: Select an external agent `.py` script (requires an external ego vehicle).
 
-Expect:
-- After selecting, the button changes to **Clear Agent** and shows the agent filename under it.
-- You can’t change the agent while a scenario is running (press **Stop** first).
+You can't change the agent while a scenario is running.
+
+## Optional: NPC Driving Mode
+
+In the top bar, the **NPC Agent** dropdown controls how NPC vehicles follow their routes:
+
+- **Simulated** (default): Uses CARLA's BasicAgent — realistic steering and throttle. May overshoot sharp turns at high speed.
+- **Scripted**: Uses ScenarioRunner's SimpleVehicleControl — sets velocity directly toward waypoints. Exact paths regardless of speed.
+
+The selected mode applies to all NPC vehicles during playback. Hover over each item for a tooltip.
+
+## Optional: Export to OpenSCENARIO (.xosc)
+
+VSE can export your scenario to **OpenSCENARIO 1.0** (`.xosc`) format for use with [CARLA ScenarioRunner](https://github.com/carla-simulator/scenario_runner).
+
+1. Author or open a scenario as usual.
+2. Go to **Scenario** menu → **Export .xosc**.
+3. Choose a filename in the file dialog (defaults to same name/location as the `.json`).
+
+The `.xosc` file is standalone — it does not modify your `.json`.
+
+**Run it with:**
+```bash
+python ~/scenario_runner/scenario_runner.py --openscenario /path/to/scenario.xosc
+```
 
 ## Optional: Example Scenarios (examples/)
 
