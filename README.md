@@ -14,6 +14,7 @@ A graphical tool for creating and editing driving scenarios for the CARLA Simula
 - Undo/redo system
 - Scenario saving/loading to JSON files
 - Integration with CARLA ScenarioRunner
+- Export to OpenSCENARIO (.xosc)
 
 ## Installation
 
