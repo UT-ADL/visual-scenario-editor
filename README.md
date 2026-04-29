@@ -25,62 +25,79 @@ A graphical tool for creating and editing driving scenarios for the CARLA Simula
 - CARLA ScenarioRunner
 - CARLA UT Lexus
 
-### 1. Install CARLA Simulator
 
-Download CARLA 0.9.15 from the [official releases](https://github.com/carla-simulator/carla/releases):
-
-```bash
-# Extract to your preferred location
-tar -xzf ~/Downloads/CARLA_0.9.15.tar.gz -C ~
-
-# Set CARLA_ROOT environment variable
-export CARLA_ROOT=$HOME/CARLA_0.9.15
-```
-
-### 2. Install CARLA ScenarioRunner
-
-Clone the ScenarioRunner repository:
-
-```bash
-git clone https://github.com/UT-ADL/scenario_runner.git
-
-# Install ScenarioRunner dependencies
-pip install -r scenario_runner/requirements.txt
-
-# Set SCENARIO_RUNNER_ROOT environment variable
-export SCENARIO_RUNNER_ROOT=$HOME/scenario_runner
-```
-
-### 3. Install CARLA UT Lexus
-
-Download and install [utlexus.tar.gz](https://github.com/UT-ADL/carla_lexus):
-
-
-### 4. Configure PYTHONPATH Environment Variable
-
-Set up the PYTHONPATH environment variable:
-
-```bash
-# Add CARLA Python API to PYTHONPATH
-export PYTHONPATH=$PYTHONPATH:$CARLA_ROOT/PythonAPI/carla/dist/carla-0.9.15-py3.7-linux-x86_64.egg
-```
-
-### 5. Install VSE Dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### Persistent Configuration
-
-To avoid setting environment variables each session, add them to your shell profile (`~/.bashrc` or `~/.zshrc`):
-
-```bash
-# CARLA configuration
-export CARLA_ROOT=$HOME/CARLA_0.9.15
-export SCENARIO_RUNNER_ROOT=$HOME/scenario_runner
-export PYTHONPATH=$PYTHONPATH:$CARLA_ROOT/PythonAPI/carla/dist/carla-0.9.15-py3.7-linux-x86_64.egg
-```
+#### 1. Create a directory into which to install carla and export it as `CARLA_ROOT`. Also update `PYTHONPATH` to make Carla agents importable in Python.
+   ```
+   mkdir ~/CARLA_0.9.15
+   export CARLA_ROOT=$HOME/CARLA_0.9.15
+   export PYTHONPATH=$PYTHONPATH:${CARLA_ROOT}/PythonAPI/carla
+   ```
+   **Note:** Putting the above exports in `~/.bashrc` will reduce the hassle of exporting them every time you open a terminal.
+   ```
+   echo "export CARLA_ROOT=$HOME/CARLA_0.9.15" >> ~/.bashrc
+   echo "export PYTHONPATH=$PYTHONPATH:${CARLA_ROOT}/PythonAPI/carla" >> ~/.bashrc
+   ```
+#### 2. Change into the directory and download [Carla 0.9.15](https://tiny.carla.org/carla-0-9-15-linux).
+   ```
+   cd $CARLA_ROOT
+   wget https://tiny.carla.org/carla-0-9-15-linux -O CARLA_0.9.15.tar.gz
+   ```
+#### 3. Extract the file
+   ```
+   tar xzvf CARLA_0.9.15.tar.gz
+   ```
+#### 4. Delete the downloaded carla archive file.
+   ```
+   rm CARLA_0.9.15.tar.gz
+   ```
+#### 5. Go to the `Import` directory
+   ```
+   cd Import
+   ```
+#### 6. Download [utlexus.tar.gz](https://github.com/UT-ADL/carla_lexus/releases/download/v0.9.15/utlexus.tar.gz).
+   ```
+   wget https://github.com/UT-ADL/carla_lexus/releases/download/v0.9.15/utlexus.tar.gz
+   ```
+#### 7. Move to the parent directory
+   ```
+   cd ..
+   ```
+#### 8. Import the UT Lexus vehicle model.
+   ```
+   ./ImportAssets.sh
+   ```
+#### 9. Delete the `utlexus.tar.gz` file from the `Import` directory
+  ```
+  rm Import/utlexus.tar.gz
+  ```
+#### 10. Now, install the Carla Python module
+  ```
+  pip install carla==0.9.15
+  ```
+#### 11. Install CARLA dependencies:
+  ```
+  sudo apt install libomp5
+  ```
+#### 12. Clone [Scenario Runner](https://scenario-runner.readthedocs.io/en/latest/) to a directory of your choice
+   ```
+   git clone https://github.com/UT-ADL/scenario_runner.git
+   ```
+#### 13. Install Scenario Runner requirements
+   ```
+   pip install -r scenario_runner/requirements.txt
+   ```
+#### 14. Set SCENARIO_RUNNER_ROOT environment variable
+   ```
+   echo "export SCENARIO_RUNNER_ROOT=<path_to>/scenario_runner" >> ~/.bashrc
+   ```
+#### 15. Clone VSE to a directory of your choice
+   ```
+   git clone https://github.com/UT-ADL/visual-scenario-editor.git
+   ```
+#### 16. Install VSE requirements
+   ```
+   pip install -r visual-scenario-editor/requirements.txt
+   ```
 
 ## Usage
 
