@@ -84,6 +84,7 @@ import py_trees
 from agents.navigation.basic_agent import BasicAgent
 from agents.navigation.global_route_planner import GlobalRoutePlanner
 from agents.navigation.local_planner import RoadOption
+from agents.tools.misc import get_speed, get_trafficlight_trigger_location
 from py_trees import common as py_trees_common
 from py_trees.behaviour import Behaviour
 from py_trees.composites import Parallel, Sequence
@@ -104,7 +105,6 @@ from srunner.scenariomanager.scenarioatomics.atomic_behaviors import (
 from srunner.scenariomanager.scenarioatomics.atomic_criteria import (
     CollisionTest,
     Criterion,
-    EndofRoadTest,
     InRouteTest,
     KeepLaneTest,
     OffRoadTest,
@@ -147,7 +147,10 @@ _TRAFFIC_LIGHT_FINGERPRINT_SCALE = 4.0  # ~0.25m quantization
 
 EGO_DEFAULT_SPEED_KMH = 40.0
 
-_LARGE_MAP_TOPOLOGY_THRESHOLD = 10000
+# Debug toggle for the forked CARLA Minimal Agent publisher process. When True,
+# _ros_plan_publisher_process emits step markers and surfaces the agent's own
+# rospy.loginfo to stderr. Set False to silence. See docs/vse_technical_notes.md.
+AGENT_DEBUG = True
 
 # Some large maps (composed of streamed tiles) can produce `world.cast_ray()` hits in a
 # tile-local XY frame. This manifests as hit locations that do not lie on the input ray
@@ -426,7 +429,7 @@ def cast_ray_with_tile_offset_compensation(
     }
 
 
-def get_ground_height(world, location, debug=False, cached_map=None, *, return_metadata=False, probe_on_miss=True):
+def get_ground_height(world, location, debug=False, cached_map=None, *, return_metadata=False, probe_on_miss=True, ignore_labels=None):
     """
     Get the actual ground height at a location using raycast.
     Tries raycasting first, then falls back to waypoint height, then original Z if all else fails.
@@ -438,6 +441,8 @@ def get_ground_height(world, location, debug=False, cached_map=None, *, return_m
         location: carla.Location to check
         debug: bool - Enable debug logging for coordinate testing (default False)
         probe_on_miss: bool - Whether to probe grid of offsets when raycast misses (default True, can be slow on large maps)
+        ignore_labels: optional collection of carla.CityObjectLabel values whose
+            raycast hits are skipped (e.g. Pedestrians for walker skeleton hits)
     Returns:
         float: Detected ground height (Z coordinate)
     """
@@ -465,6 +470,11 @@ def get_ground_height(world, location, debug=False, cached_map=None, *, return_m
             probe_on_miss=probe_on_miss,
             debug=debug,
         )
+
+        if raycast_result and ignore_labels:
+            raycast_result = [
+                h for h in raycast_result if getattr(h, "label", None) not in ignore_labels
+            ]
 
         if raycast_result:
             # Found ground, use that height directly
@@ -528,23 +538,67 @@ def get_ground_height(world, location, debug=False, cached_map=None, *, return_m
         return result if return_metadata else fallback_height
 
 
+# Skeleton hits of walkers carry the Pedestrians label and can be filtered;
+# their collision capsules report NONE and cannot (NONE is also legitimate
+# terrain on custom maps).
+_WALKER_GROUND_IGNORE_LABELS = frozenset({carla.CityObjectLabel.Pedestrians})
+
+
+def _walker_ground_height(world, walker, sample_location, cached_map=None):
+    """Ground height for walker grounding (snap/idle/destination) operations.
+
+    When the walker is standing at/near the sample XY, its own standing height
+    (actor center minus bounding-box half-height) is the ground truth — a
+    raycast there would hit the walker itself: client commands are queued until
+    the next world tick while cast_ray queries run immediately, so nothing can
+    move the walker out of the ray within one tick, and its capsule hits are
+    NONE-labeled (unfilterable by label). Only when the walker is away from the
+    sample point (e.g. a teleport snap that has not been applied yet) is the
+    raycast used, where a self-hit is impossible.
+    """
+    try:
+        bbox_extent_z = float(getattr(walker.bounding_box.extent, "z", 1.0))
+    except Exception:
+        bbox_extent_z = 1.0
+    try:
+        loc = walker.get_location()
+        if math.hypot(loc.x - sample_location.x, loc.y - sample_location.y) <= 0.7:
+            return loc.z - bbox_extent_z
+    except Exception:
+        pass
+    return get_ground_height(
+        world,
+        sample_location,
+        debug=False,
+        cached_map=cached_map,
+        probe_on_miss=True,
+        ignore_labels=_WALKER_GROUND_IGNORE_LABELS,
+    )
+
+
 # =============================================================================
 # UTILITY FUNCTIONS
 # Map detection, timeouts, actor cleanup, CARLA data provider initialization
 # =============================================================================
 
 
-def _has_tile_files_on_disk(short_name: str) -> bool:
-    """Check if a map has _Tile_ .umap files on disk (indicates a large/tiled map)."""
+def _has_tile_files_on_disk(short_name: str, map_folder: str = "") -> bool:
+    """Check if a map has _Tile_ .umap files on disk (indicates a large/tiled map).
+
+    *map_folder*, when provided, restricts the search to that specific
+    subdirectory under ``Maps/`` so that tile files belonging to a
+    *different* map with a similar name are not matched.
+    """
     carla_root = os.environ.get("CARLA_ROOT")
     if not carla_root or not short_name:
         return False
     import glob as _glob
-    pattern = os.path.join(
-        carla_root, "CarlaUE4", "Content", "Carla", "Maps",
-        "**", f"{short_name}_Tile_*.umap",
-    )
-    return bool(_glob.glob(pattern, recursive=True))
+    maps_root = os.path.join(carla_root, "CarlaUE4", "Content", "Carla", "Maps")
+    if map_folder:
+        pattern = os.path.join(maps_root, map_folder, f"{short_name}_Tile_*.umap")
+    else:
+        pattern = os.path.join(maps_root, "**", f"{short_name}_Tile_*.umap")
+    return bool(_glob.glob(pattern, recursive=not map_folder))
 
 
 def _is_large_map(carla_map: Optional[carla.Map]) -> bool:
@@ -557,17 +611,15 @@ def _is_large_map(carla_map: Optional[carla.Map]) -> bool:
         name = str(getattr(carla_map, "name", "") or "").lower()
     except Exception:
         name = ""
-    if "large" in name:
-        return True
     # Check for tile files on disk (catches maps with sublevels like tallinn_demo)
-    short = name.split('/')[-1]
-    if short and _has_tile_files_on_disk(short):
+    parts = name.split('/')
+    short = parts[-1]
+    # Use the parent folder (e.g. "tartu_large_awmini") so we don't match
+    # tile files belonging to a different map with a similar short name.
+    folder = parts[-2] if len(parts) >= 2 else ""
+    if short and _has_tile_files_on_disk(short, map_folder=folder):
         return True
-    try:
-        topo = carla_map.get_topology()
-        return len(topo) >= _LARGE_MAP_TOPOLOGY_THRESHOLD
-    except Exception:
-        return False
+    return False
 
 
 def _temporary_client_timeout(client: Optional[carla.Client], timeout_s: float):
@@ -641,6 +693,29 @@ def _destroy_actor_ids(
             print(f"[Cleanup] Failed to destroy actors {cleaned}: {exc}")
 
 
+def _cdp_purge_actor_id(actor_id: int) -> None:
+    """Remove any CarlaDataProvider actor-map entries for ``actor_id`` before re-registering it.
+
+    CarlaDataProvider is a process-global singleton that is never cleaned between runs (no
+    cleanup()/reset() anywhere). Its actor maps are keyed by the proxy *object*, but
+    ``get_velocity``/``get_location`` match by id and return the *first* id-match. Across runs the
+    reused ego (the persistent placeholder, re-fetched as a new proxy each run) leaves a stale prior
+    entry that shadows the fresh one; after an external-ego world switch that stale proxy stops being
+    refreshed by on_carla_tick, so ``get_velocity`` returns its frozen ~0 speed and CollisionTest
+    skips every real collision (speed < EPSILON => "not the actor's fault"). Dropping same-id entries
+    right before register_actor leaves only the fresh, alive proxy — without disturbing other actors.
+    """
+    for _m in (CarlaDataProvider._actor_velocity_map,
+               CarlaDataProvider._actor_location_map,
+               CarlaDataProvider._actor_transform_map):
+        for _k in [a for a in list(_m.keys()) if getattr(a, "id", None) == actor_id]:
+            try:
+                del _m[_k]
+            except Exception:
+                pass
+    CarlaDataProvider._all_actors = None
+
+
 def _init_carla_data_provider(world: carla.World, client: Optional[carla.Client] = None) -> bool:
     """
     Initialize ScenarioRunner's CarlaDataProvider without blocking on large maps.
@@ -710,14 +785,134 @@ class _NoopGlobalRoutePlanner(GlobalRoutePlanner):
         return []
 
 
+class _NpcBasicAgent(BasicAgent):
+    """BasicAgent variant for NPC vehicles that are NOT ignoring vehicles.
+
+    Stock BasicAgent reacts to any detected obstacle with a binary emergency stop
+    (full brake on, otherwise nothing). For NPCs that should yield to the ego that
+    is both too late-feeling and abrupt. This subclass keeps BasicAgent's detection
+    and steering untouched but replaces the *vehicle* response with graduated braking
+    proportional to the gap: it eases off when the ego is far inside the detection
+    range and brakes harder as it closes, reaching full brake within the stopping
+    distance. Red traffic lights still trigger the stock hard stop.
+
+    Detection range and brake strength are tuned separately (see
+    ``_apply_npc_detection_tuning``); this class only changes the *response*. Used
+    only for ``ignore_vehicles=False`` NPCs, so the deterministic ignore path is
+    never routed through here.
+    """
+
+    # Comfortable full-stop deceleration assumed when sizing the brake ramp (m/s^2).
+    # Matches the value the route backward-pass uses for approach braking.
+    _YIELD_DECEL = 6.0
+    # Extra standoff distance kept in front of the obstacle / stop line (m).
+    _YIELD_MARGIN = 2.0
+    # Vehicle-only detection/brake tuning (instance values are set by
+    # _apply_npc_detection_tuning). Independent of the red-light tuning below.
+    _npc_vehicle_speed_ratio = 1.5
+    _npc_vehicle_max_brake = 1.0
+    # Red-light "glide to the line" tuning. Detection is widened to at least
+    # stopping_distance * _npc_tlight_slack (never below the CARLA-stock 5 + v) so there
+    # is always room to ease to a stop; the brake then ramps up toward _npc_tlight_max_brake
+    # as the stop line approaches.
+    _npc_tlight_slack = 1.6
+    _npc_tlight_max_brake = 1.0
+
+    def run_step(self):
+        """One navigation step with graduated (rather than binary) braking.
+
+        Vehicle obstacles use graduated braking proportional to the gap. Red lights use the
+        same graduated model toward the stop line, but with the detection distance widened
+        (>= stopping distance) so the NPC eases to a stop AT the line instead of either
+        stopping short or overshooting when it arrives fast.
+        """
+        vehicle_list = self._world.get_actors().filter("*vehicle*")
+        speed_ms = get_speed(self._vehicle) / 3.6
+        stopping_distance = (speed_ms * speed_ms) / (2.0 * self._YIELD_DECEL) + self._YIELD_MARGIN
+
+        # Vehicle obstacle detection — widened, vehicle-only lookahead.
+        max_vehicle_distance = self._base_vehicle_threshold + self._npc_vehicle_speed_ratio * speed_ms
+        affected_by_vehicle, _, distance = self._vehicle_obstacle_detected(
+            vehicle_list, max_vehicle_distance)
+
+        # Traffic-light detection — widened to at least stopping_distance * slack (but never
+        # below the CARLA-stock 5 + v) so there is room to glide to a stop. The stock
+        # distance alone is shorter than the stopping distance at speed -> overshoot.
+        max_tlight_distance = max(
+            self._base_tlight_threshold + self._speed_ratio * speed_ms,
+            stopping_distance * self._npc_tlight_slack,
+        )
+        affected_by_tlight, tlight = self._affected_by_traffic_light(
+            self._lights_list, max_tlight_distance)
+
+        control = self._local_planner.run_step()
+
+        if affected_by_tlight:
+            # Glide to the stop line: brake proportional to stopping_distance / gap, so a
+            # fast NPC eases down over the (widened) distance and stops at the line, while a
+            # slow one only brakes lightly near it — neither stopping short nor overshooting.
+            tl_distance = max_tlight_distance
+            if tlight is not None:
+                try:
+                    trigger = get_trafficlight_trigger_location(tlight)
+                    tl_distance = self._vehicle.get_location().distance(trigger)
+                except Exception:
+                    tl_distance = max_tlight_distance
+            ratio = max(0.0, min(1.0, stopping_distance / max(tl_distance, 0.1)))
+            control.throttle = 0.0
+            control.brake = max(control.brake, self._npc_tlight_max_brake * ratio)
+        elif affected_by_vehicle:
+            # Graduated brake: gentle when the obstacle is far inside the lookahead,
+            # full brake once we are within the stopping distance (+ margin).
+            ratio = max(0.0, min(1.0, stopping_distance / max(distance, 0.1)))
+            control.throttle = 0.0
+            control.brake = max(control.brake, self._npc_vehicle_max_brake * ratio)
+
+        return control
+
+
+def _apply_npc_detection_tuning(agent):
+    """Widen obstacle detection and harden obstacle braking for an NPC ``_NpcBasicAgent``.
+
+    Stock BasicAgent defaults look only ~5 m + speed ahead, brake at half strength,
+    and (with use_bbs off) only treat a vehicle in the *same lane* as a hazard — so
+    NPCs brake too late and miss crossing/adjacent egos. These overrides fix that.
+
+    IMPORTANT: this deliberately does NOT set ``agent._speed_ratio`` or ``agent._max_brake``.
+    ``_speed_ratio`` is only the CARLA-default floor of the red-light detection distance, and the
+    red light no longer uses ``add_emergency_stop`` (so ``_max_brake`` is unused). Vehicle
+    detection/braking lives in the ``_npc_vehicle_*`` attributes; the red-light "glide to the
+    line" behaviour lives in the ``_npc_tlight_*`` attributes (see ``_NpcBasicAgent.run_step``).
+    ``_base_vehicle_threshold`` and ``_use_bbs_detection`` are vehicle-only, set here directly.
+
+    Only ever called for ``ignore_vehicles=False`` NPCs. Values overridable via ``VSE_NPC_*``.
+    """
+    agent._base_vehicle_threshold = float(os.environ.get("VSE_NPC_VEHICLE_THRESHOLD_M", "8.0") or 8.0)
+    agent._use_bbs_detection = os.environ.get("VSE_NPC_USE_BBS", "1") == "1"
+    agent._npc_vehicle_speed_ratio = float(os.environ.get("VSE_NPC_DETECTION_SPEED_RATIO", "1.5") or 1.5)
+    agent._npc_vehicle_max_brake = float(os.environ.get("VSE_NPC_MAX_BRAKE", "1.0") or 1.0)
+    # Red-light glide-to-line: widen detection to stopping_distance * slack (room to ease to
+    # a stop) and ramp the brake up to this ceiling as the line approaches.
+    agent._npc_tlight_slack = max(1.0, float(os.environ.get("VSE_NPC_TLIGHT_SLACK", "1.6") or 1.6))
+    agent._npc_tlight_max_brake = float(os.environ.get("VSE_NPC_TLIGHT_MAX_BRAKE", "1.0") or 1.0)
+
+
 def _ros_plan_publisher_process(
     raw_waypoints: List[Tuple[float, float, float, float]],
     downsample_interval: float,
     ros_publish_delay: float,
     agent_path: str,
     skip_interpolation: bool,
+    cancel_now=None,
+    cancel_done=None,
 ) -> None:
-    """Child process entry: publish a plan via a ScenarioRunner agent with a fresh ROS node."""
+    """Child process entry: publish a plan via a ScenarioRunner agent with a fresh ROS node.
+
+    cancel_now/cancel_done are optional multiprocessing.Event handles used for a graceful
+    route cancel: the parent sets cancel_now and waits for cancel_done so the route is
+    cancelled while this agent is still healthy (clean /planning/cancel_route reply) rather
+    than during SIGTERM teardown (which yields a "returned no response" error).
+    """
     parent_pid = os.getppid()
 
     # Graceful shutdown: convert SIGTERM into a cooperative exit so the
@@ -726,6 +921,18 @@ def _ros_plan_publisher_process(
     def _sigterm_handler(signum, frame):
         _shutdown.set()
     signal.signal(signal.SIGTERM, _sigterm_handler)
+
+    # Forked-agent diagnostics (gated by the module-level AGENT_DEBUG constant).
+    # stderr + flush so messages reach the VSE terminal even though this runs in
+    # a child process; the agent itself uses rospy.loginfo (surfaced below).
+    def _dbg(msg):
+        if AGENT_DEBUG:
+            print("[agent-dbg] %s" % msg, file=sys.stderr, flush=True)
+
+    _dbg("entry  ROS_MASTER_URI=%s  ROS_IP=%s  ROS_HOSTNAME=%s"
+         % (os.environ.get("ROS_MASTER_URI"), os.environ.get("ROS_IP"), os.environ.get("ROS_HOSTNAME")))
+    _dbg("agent_path=%s  raw_waypoints=%d  skip_interpolation=%s"
+         % (agent_path, len(raw_waypoints or []), skip_interpolation))
 
     agent_file = None
     try:
@@ -743,6 +950,8 @@ def _ros_plan_publisher_process(
     except Exception as exc:  # pragma: no cover - runtime guard
         print(f"[MiniRunner] Failed to load agent from {agent_file or agent_path}: {exc}")
         return
+
+    _dbg("agent class resolved: %s.%s" % (module_name, agent_class_name))
 
     if not raw_waypoints or len(raw_waypoints) < 2:
         print("[MiniRunner] No waypoints available for agent; skipping publish")
@@ -799,7 +1008,21 @@ def _ros_plan_publisher_process(
                 time.sleep(0.1)
             return False
 
-        agent = agent_class("")
+        if AGENT_DEBUG:
+            # Surface the agent's own rospy.loginfo (e.g. "Published /initialpose",
+            # "Publishing plan..") on stderr. Also catches rospy/tf startup INFO.
+            _h = logging.StreamHandler(sys.stderr)
+            _h.setFormatter(logging.Formatter("[agent-ros] %(levelname)s %(message)s"))
+            logging.getLogger().addHandler(_h)
+            logging.getLogger().setLevel(logging.INFO)
+
+        _dbg("instantiating agent (runs setup(): init_node, params, TF lookup)...")
+        try:
+            agent = agent_class("")
+        except Exception as exc:
+            _dbg("AGENT setup() FAILED: %r" % exc)
+            raise
+        _dbg("agent instantiated OK")
 
         try:
             # Warm-up publish (two close goals) to wake subscribers.
@@ -822,6 +1045,7 @@ def _ros_plan_publisher_process(
         except Exception as exc:
             print(f"[MiniRunner] Warm-up publish failed; continuing with main route: {exc}")
 
+        _dbg("set_global_plan: %d route pts" % len(route))
         agent.set_global_plan(gps_route, route)
         _wait_for_ros_time(agent, route, timeout=3.0)
 
@@ -834,17 +1058,36 @@ def _ros_plan_publisher_process(
             for idx in range(publish_burst):
                 agent.publish_plan()
                 agent.global_plan_published = True
+                _dbg("publish_plan() done (burst %d/%d)" % (idx + 1, publish_burst))
                 if idx + 1 < publish_burst:
                     time.sleep(max(0.1, ros_publish_delay))
         except Exception as exc:
             print(f"[MiniRunner] Failed to publish plan burst: {exc}")
 
+        cancelled = False
         try:
             # Keep the ROS publishers alive so late subscribers can still receive the
             # latched Path message. This addresses first-run cases where an external
             # stack connects after the publish completes (otherwise only the final goal
             # may be observed).
             while not _shutdown.is_set():
+                # Graceful cancel: when the parent requests a stop it sets cancel_now while
+                # this process is still healthy, so the /planning/cancel_route round-trip
+                # completes cleanly (no "returned no response"). Cancel exactly once here,
+                # then signal cancel_done and exit; the finally below will not re-cancel.
+                if cancel_now is not None and cancel_now.is_set():
+                    try:
+                        agent.set_global_plan([], [])
+                        print("[MiniRunner] Route cancelled via agent.set_global_plan([], [])")
+                    except Exception as exc:
+                        print(f"[MiniRunner] Could not cancel route: {exc}")
+                    cancelled = True
+                    if cancel_done is not None:
+                        try:
+                            cancel_done.set()
+                        except Exception:
+                            pass
+                    break
                 try:
                     current_ppid = os.getppid()
                     # Exit if parent died (ppid changed or became 1/init)
@@ -858,13 +1101,20 @@ def _ros_plan_publisher_process(
         except Exception:
             pass
         finally:
-            # Cancel the active route by sending an empty plan to the agent.
-            # The agent handles calling /planning/cancel_route internally.
-            try:
-                agent.set_global_plan([], [])
-                print("[MiniRunner] Route cancelled via agent.set_global_plan([], [])")
-            except Exception as exc:
-                print(f"[MiniRunner] Could not cancel route: {exc}")
+            # Fallback cancel only if the graceful in-loop cancel did not run (e.g. hard
+            # SIGTERM or parent died). This may log a "returned no response" because it
+            # happens during teardown, but the planner still cancels the route.
+            if not cancelled:
+                try:
+                    agent.set_global_plan([], [])
+                    print("[MiniRunner] Route cancelled via agent.set_global_plan([], [])")
+                except Exception as exc:
+                    print(f"[MiniRunner] Could not cancel route: {exc}")
+                if cancel_done is not None:
+                    try:
+                        cancel_done.set()
+                    except Exception:
+                        pass
             try:
                 agent.destroy()
             except Exception:
@@ -1051,6 +1301,29 @@ def _distance(a: carla.Location, b: carla.Location) -> float:
     return float(a.distance(b))
 
 
+def _resolve_walk_speed_mps(planned_speed_kmh, deviation_kmh) -> float:
+    """Resolve a concrete walking speed (m/s) from a planned km/h speed and an
+    optional +/- deviation. The deviation is applied once via random.randint and
+    the result is clamped to >= 0. Used for pedestrian leg speeds."""
+    try:
+        planned_speed_kmh = float(planned_speed_kmh)
+    except Exception:
+        planned_speed_kmh = 0.0
+    try:
+        deviation_kmh = int(float(deviation_kmh or 0))
+    except Exception:
+        deviation_kmh = 0
+    if deviation_kmh < 0:
+        deviation_kmh = 0
+
+    speed_kmh = int(round(planned_speed_kmh))
+    if deviation_kmh:
+        speed_kmh += random.randint(-deviation_kmh, deviation_kmh)
+    if speed_kmh < 0:
+        speed_kmh = 0
+    return speed_kmh / 3.6
+
+
 def _grounded_location(world: carla.World, location: carla.Location) -> carla.Location:
     """
     DEPRECATED: Use get_ground_height() instead for more accurate ground detection.
@@ -1069,17 +1342,6 @@ def _grounded_location(world: carla.World, location: carla.Location) -> carla.Lo
     )
     grounded.z = ground_height + 0.2  # Small offset above ground
     return grounded
-
-
-def _estimate_turn_radius(curr_heading: float, next_heading: float, len_a: float, len_b: float) -> Optional[float]:
-    delta = abs(_normalize_yaw(next_heading - curr_heading))
-    if delta < 1e-2:
-        return None
-    angle_rad = math.radians(delta)
-    chord = min(len_a, len_b)
-    if chord < 1e-2:
-        return None
-    return chord / (2.0 * math.sin(angle_rad / 2.0))
 
 
 def _compute_turn_radius_from_locations(
@@ -1360,10 +1622,7 @@ class RouteSegment:
     distance: float
     heading: float
     idle_after: float
-    turn_time: float
     is_destination: bool
-    next_heading: Optional[float] = None
-    turn_radius: Optional[float] = None
 
 
 @dataclass
@@ -1420,7 +1679,7 @@ class TrafficLightTrigger(TriggerableActor):
     ids: List[int] = field(default_factory=list)
     sequence: List[dict] = field(default_factory=list)  # [{color, duration_ticks}]
     current_step: int = 0
-    step_start_tick: int = 0
+    step_start_time: float = 0.0  # GameTime seconds at step start; drives phase completion (tick-rate independent)
     traffic_lights: List[carla.TrafficLight] = field(default_factory=list)
     sequence_completed: bool = False
 
@@ -1437,6 +1696,151 @@ class VehicleTrigger(TriggerableActor):
     vehicle_index: int = 0  # Index in vehicles_data list
 
 
+class _SafeVehicleControl(SimpleVehicleControl):
+    """SimpleVehicleControl guarded against the divide-by-zero stock SVC raises when the
+    current target waypoint coincides with the actor's (cached) location.
+
+    Stock ``_set_new_velocity`` computes ``velocity.x = direction.x / direction_norm * speed``
+    with ``direction = next_waypoint - CarlaDataProvider.get_location(actor)``. The waypoint-drop
+    loop in ``run_step`` measures distance with the *live* ``actor.get_location()``, while this
+    divide uses the *cached* CDP location; when the cached location equals the target (e.g. the
+    first step before the cache advances, common on large maps) ``direction_norm`` is 0 and stock
+    SVC raises ``ZeroDivisionError``. That exception propagates to VehicleController, which logs it
+    and stops the controller thread — so the NPC silently never moves (only happens in velocity /
+    "Scripted" mode; ``basic_agent`` never calls SVC). This subclass detects the degenerate case and
+    skips driving for that step, returning a ~0 norm so ``run_step`` advances to the next waypoint.
+    Used for velocity-mode NPCs in every tick mode.
+    """
+
+    # Below this planar distance (m) the target is treated as "already reached": skip the
+    # velocity write so the stock divide-by-zero can't fire. Far below the 0.5 m waypoint-drop
+    # threshold, so it never interferes with normal driving.
+    _MIN_DIRECTION_NORM = 1e-3
+
+    def _set_new_velocity(self, next_location):
+        location = CarlaDataProvider.get_location(self._actor) if self._actor else None
+        if location is not None:
+            if math.hypot(next_location.x - location.x, next_location.y - location.y) < self._MIN_DIRECTION_NORM:
+                try:
+                    self._actor.set_target_velocity(carla.Vector3D(0.0, 0.0, 0.0))
+                except Exception:
+                    pass
+                return 0.0
+        return super()._set_new_velocity(next_location)
+
+
+class _AsyncSafeVehicleControl(_SafeVehicleControl):
+    """SimpleVehicleControl variant for asynchronous / vehicle-in-the-loop playback.
+
+    Stock SVC steers by ``set_target_angular_velocity`` (simple_vehicle_control.py
+    ``_set_new_velocity``), a per-physics-tick control law: it imparts a yaw rate and
+    assumes one ``run_step`` per fixed-dt world tick. In async/VIL the ROS bridge
+    free-runs physics (``synchronous_mode=False``, ``fixed_delta_seconds=0``), so the
+    engine integrates that yaw rate for a variable interval between this controller's
+    ~20 Hz ``run_step`` calls -> over-rotation -> opposite correction -> the car spins
+    on the spot while the world-frame linear velocity still drags it along the route.
+
+    This subclass keeps SVC's linear / obstacle / traffic-light / brake logic
+    (``super()._set_new_velocity``), then cancels the angular velocity and writes the
+    body yaw kinematically toward the travel bearing, rate-limited and gated exactly
+    like ``WalkToTarget`` (the pedestrian async fix). The linear velocity is world-frame,
+    so yaw is cosmetic for translation: this corrects how the car faces, never its path.
+    Extends _SafeVehicleControl (divide-by-zero guard); selected only in async, while
+    synchronous runs use _SafeVehicleControl directly (no kinematic yaw write).
+    """
+
+    # Max body-yaw rate (degrees per simulation second). Yaw does not affect the path
+    # (linear velocity is world-frame), so this only bounds how smoothly the heading
+    # tracks the travel direction; it also tames the near-waypoint blow-up of SVC's
+    # angular law as direction_norm -> 0. Lower than the walker's 360 (cars yaw slower).
+    TURN_RATE_DEG_S = 180.0
+    # Only write the facing via set_transform when the yaw actually changed by at least
+    # this much. In async/VIL each write applies a stale position and snaps the actor
+    # back ~1 server frame of motion, so per-tick no-op writes on straight legs would
+    # cut effective speed. Same mechanism/value as WalkToTarget.YAW_WRITE_EPSILON_DEG.
+    YAW_WRITE_EPSILON_DEG = 0.5
+
+    def __init__(self, actor, args=None):
+        super().__init__(actor, args)
+        self._last_update_time: Optional[float] = None
+        try:
+            self._current_yaw: Optional[float] = _normalize_yaw(
+                CarlaDataProvider.get_transform(actor).rotation.yaw
+            )
+        except Exception:
+            self._current_yaw = None
+        self._last_written_yaw: Optional[float] = self._current_yaw
+
+    def _set_new_velocity(self, next_location):
+        # Reuse SVC's linear velocity + obstacle/traffic-light/brake logic and its
+        # waypoint-advancement return value.
+        direction_norm = super()._set_new_velocity(next_location)
+
+        actor = self._actor
+        if actor is None or not actor.is_alive:
+            return direction_norm
+
+        # (a) Cancel the persistent angular velocity SVC just set — the spin cause.
+        try:
+            actor.set_target_angular_velocity(carla.Vector3D(0.0, 0.0, 0.0))
+        except Exception:
+            pass
+
+        now = GameTime.get_time()
+        if self._last_update_time is None:
+            dt = 0.0
+        else:
+            dt = min(max(now - self._last_update_time, 0.0), 0.25)
+        self._last_update_time = now
+
+        location = CarlaDataProvider.get_location(actor)
+        if location is None:
+            return direction_norm
+
+        # (b) Rate-limit the body yaw toward the travel bearing, then gate the write.
+        fallback_yaw = self._current_yaw if self._current_yaw is not None else 0.0
+        bearing = _compute_heading(location, next_location, fallback_yaw)
+        if self._current_yaw is None:
+            self._current_yaw = bearing
+
+        yaw_error = _normalize_yaw(bearing - self._current_yaw)
+        max_step = self.TURN_RATE_DEG_S * dt
+        if abs(yaw_error) <= max_step:
+            self._current_yaw = bearing
+        else:
+            self._current_yaw = _normalize_yaw(
+                self._current_yaw + math.copysign(max_step, yaw_error)
+            )
+
+        yaw_changed = (
+            self._last_written_yaw is None
+            or abs(_normalize_yaw(self._current_yaw - self._last_written_yaw))
+            >= self.YAW_WRITE_EPSILON_DEG
+        )
+        if yaw_changed:
+            try:
+                transform = actor.get_transform()
+                transform.rotation.yaw = self._current_yaw
+                actor.set_transform(transform)
+                self._last_written_yaw = self._current_yaw
+                # set_transform can zero the rigid-body linear velocity on some CARLA
+                # builds; re-assert the world-frame velocity SVC computed so a yaw write
+                # mid-turn does not stall forward motion until the next ~20 Hz step.
+                target_speed = self._target_speed
+                if target_speed > 0.0 and direction_norm > 1e-6:
+                    direction = next_location - location
+                    velocity = carla.Vector3D(
+                        direction.x / direction_norm * target_speed,
+                        direction.y / direction_norm * target_speed,
+                        0.0,
+                    )
+                    actor.set_target_velocity(velocity)
+            except Exception:
+                pass
+
+        return direction_norm
+
+
 # =============================================================================
 # VEHICLE CONTROLLER
 # Threaded vehicle navigation with waypoint following and trigger support
@@ -1449,8 +1853,7 @@ class VehicleController:
     STOPPED_SPEED = 0.5
     SLEEP_INTERVAL = 0.05
     WAYPOINT_REACHED_THRESHOLD = 3.0  # meters - when to mark waypoint as reached
-    DESTINATION_SLOW_RADIUS = 10.0  # meters before destination to apply final speed
-    DESTINATION_SPEED_HYSTERESIS = 6.0  # meters buffer to re-arm destination speed logic
+    IDLE_APPROACH_DECEL = 2.5  # m/s^2 - comfortable deceleration used to brake toward idle waypoints and the destination
 
     def __init__(self, agent: BasicAgent, vehicle: carla.Actor, destination: carla.Location,
                  scenario: "vse_play", index: int, route_points: List[RoutePoint], initial_idle_time: float = 0.0,
@@ -1479,7 +1882,6 @@ class VehicleController:
         self._waypoint_idle_start = [None] * len(route_points)  # Track when idle started at each waypoint
         self._waypoint_idle_complete = [False] * len(route_points)  # Track if idle time completed
         self._step_counter = 0
-        self._destination_speed_applied = False
         self._arrival_debug_last_distance: Optional[float] = None
         self._vehicle_trigger: Optional[VehicleTrigger] = vehicle_trigger
         self._destination_waypoint_index: Optional[int] = None
@@ -1592,6 +1994,19 @@ class VehicleController:
         # Comfortable fallback cruise speed when none provided
         return max(30.0, min_resume_kmh)
 
+    def _braking_limited_speed_kmh(self, distance_m: float, arrival_kmh: float) -> float:
+        """Max speed (km/h) at distance_m that still reaches arrival_kmh under comfortable braking.
+
+        Uses constant deceleration IDLE_APPROACH_DECEL, so v = sqrt(arrival^2 + 2*a*d). At d=0 this
+        returns arrival_kmh; clamping the normal target to it makes braking auto-engage at the right
+        distance for the current speed (faster car -> earlier slow-down). Used both to stop at idle
+        waypoints (arrival=0) and to reach the destination at its configured speed.
+        """
+        arrival_ms = max(0.0, arrival_kmh) / 3.6
+        d = max(0.0, distance_m)
+        v_ms = math.sqrt(arrival_ms ** 2 + 2.0 * self.IDLE_APPROACH_DECEL * d)
+        return v_ms * 3.6
+
     def _run(self):
         if self.scenario and getattr(self.scenario, "_debug", False):
             print(f"[VEHICLE] Controller {self.index} thread started (trigger_mode={self.scenario._trigger_mode})")
@@ -1634,6 +2049,7 @@ class VehicleController:
                     self.agent.set_target_speed(0)
                 except Exception:
                     pass
+                self._apply_wait_hold()
                 time.sleep(self.SLEEP_INTERVAL)
             if not (
                 self._running
@@ -1664,6 +2080,7 @@ class VehicleController:
                     self.agent.set_target_speed(0)
                 except Exception:
                     pass
+                self._apply_wait_hold()
                 if self.scenario._debug and not logged_wait:
                     print(
                         f"[VEHICLE] Controller {self.index}: waiting for personal trigger "
@@ -1705,6 +2122,7 @@ class VehicleController:
                     self.agent.set_target_speed(0)
                 except Exception:
                     pass
+                self._apply_wait_hold()
                 time.sleep(self.SLEEP_INTERVAL)
             if not (
                 self._running
@@ -1741,7 +2159,17 @@ class VehicleController:
             args = {
                 'consider_trafficlights': 'false' if self._ignore_traffic_lights else 'true',
             }
-            self._svc = SimpleVehicleControl(self.vehicle, args=args)
+            # Both velocity-mode controllers guard SVC's divide-by-zero (target == cached
+            # location). In async/VIL playback the world is not in sync mode, where stock SVC's
+            # persistent angular-velocity steering also makes NPCs spin, so use the async-safe
+            # variant that additionally writes the heading kinematically. Sync runs use the
+            # crash-guarded variant only (otherwise identical to stock SVC).
+            try:
+                _async_world = not bool(CarlaDataProvider._sync_flag)
+            except Exception:
+                _async_world = False
+            svc_cls = _AsyncSafeVehicleControl if _async_world else _SafeVehicleControl
+            self._svc = svc_cls(self.vehicle, args=args)
             # Build waypoint list as carla.Transform (what SimpleVehicleControl expects)
             wp_transforms = []
             for rp in self.waypoints:
@@ -1764,6 +2192,17 @@ class VehicleController:
                     break
 
                 loc = self.vehicle.get_location()
+
+                # Skip ticks where the freshly spawned vehicle still reports the world origin
+                # (0,0,0) before its transform has been applied. Measuring waypoint distances from
+                # the origin makes the overshoot scan below mark leading waypoints — including idle
+                # ones — as already reached, which consumes their idle time at the spawn point.
+                if abs(loc.x) < 0.01 and abs(loc.y) < 0.01 and abs(loc.z) < 0.01:
+                    self._step_counter += 1
+                    if self._stop_event.wait(timeout=self.SLEEP_INTERVAL):
+                        break
+                    continue
+
                 current_speed = self._get_current_speed_kmh()
 
                 # Advance waypoint progression: from the current active waypoint,
@@ -1802,44 +2241,71 @@ class VehicleController:
                             active_wp_idx = i
                             break
 
-                if active_wp_idx is not None:
-                    wp = self.waypoints[active_wp_idx]
-                    idle_time = wp.idle_time_s
+                # Part 1 — idle latch: a waypoint we've reached that still owes idle time.
+                # Same condition as _is_idling_at_waypoint. Hold a full stop until the timer
+                # elapses, regardless of the waypoint's configured speed or any small overshoot.
+                idling_idx = None
+                for i in range(len(self.waypoints)):
+                    if (self._waypoint_reached[i]
+                            and not self._waypoint_idle_complete[i]
+                            and self.waypoints[i].idle_time_s > 0.0):
+                        idling_idx = i
+                        break
 
-                    # Handle idle waiting at this waypoint
-                    if idle_time > 0.0 and float(loc.distance(wp.transform.location)) < self.WAYPOINT_REACHED_THRESHOLD:
-                        if not self._waypoint_idle_start[active_wp_idx]:
-                            self._waypoint_idle_start[active_wp_idx] = GameTime.get_time()
-                        if not self._waypoint_idle_complete[active_wp_idx]:
-                            elapsed = GameTime.get_time() - self._waypoint_idle_start[active_wp_idx]
-                            self.agent.set_target_speed(0)
-                            if elapsed >= idle_time:
-                                self._waypoint_idle_complete[active_wp_idx] = True
-                                self._waypoint_reached[active_wp_idx] = True
-                                # Advance to next waypoint speed
-                                if active_wp_idx + 1 < len(self.waypoints):
-                                    resume_speed = self._resolve_waypoint_speed(active_wp_idx + 1)
-                                    if resume_speed <= (self.STOPPED_SPEED * 3.6):
-                                        resume_speed = self._resolve_destination_speed()
-                                    self.agent.set_target_speed(resume_speed)
-                                else:
-                                    self.agent.set_target_speed(self._resolve_cruise_speed())
-                                    self._destination_speed_applied = False
-                        # Skip normal speed setting while idling
+                if idling_idx is not None:
+                    # Always command a full stop while latched.
+                    self.agent.set_target_speed(0)
+                    # Count idle time only while the car is actually stopped. The clock is
+                    # GameTime (simulation seconds), but it must not advance until the vehicle has
+                    # physically halted — otherwise, if the controller thread is starved while the
+                    # simulation races ahead (in-process editor runs), the elapsed GameTime could
+                    # satisfy the idle before the car ever stopped, and it would sail through.
+                    is_stopped = current_speed <= (self.STOPPED_SPEED * 3.6)
+                    if is_stopped:
+                        if self._waypoint_idle_start[idling_idx] is None:
+                            self._waypoint_idle_start[idling_idx] = GameTime.get_time()
+                        elapsed = GameTime.get_time() - self._waypoint_idle_start[idling_idx]
+                        if elapsed >= self.waypoints[idling_idx].idle_time_s:
+                            self._waypoint_idle_complete[idling_idx] = True
+                            # Resume with the next waypoint's speed (or destination/cruise fallback).
+                            if idling_idx + 1 < len(self.waypoints):
+                                resume_speed = self._resolve_waypoint_speed(idling_idx + 1)
+                                if resume_speed <= (self.STOPPED_SPEED * 3.6):
+                                    resume_speed = self._resolve_destination_speed()
+                                self.agent.set_target_speed(resume_speed)
+                            else:
+                                self.agent.set_target_speed(self._resolve_cruise_speed())
                     else:
-                        # Normal waypoint: set speed to this waypoint's target
-                        target_speed = self._resolve_waypoint_speed(active_wp_idx)
-                        self.agent.set_target_speed(target_speed)
-
-                # Apply destination speed as we approach the final goal
-                destination_distance = float(loc.distance(self.destination))
-                if destination_distance <= self.DESTINATION_SLOW_RADIUS:
-                    if not self._destination_speed_applied:
-                        self.agent.set_target_speed(self._resolve_destination_speed())
-                        self._destination_speed_applied = True
+                        # Not stopped yet — keep braking and (re)start the clock once halted.
+                        self._waypoint_idle_start[idling_idx] = None
                 else:
-                    if destination_distance > self.DESTINATION_SLOW_RADIUS + self.DESTINATION_SPEED_HYSTERESIS:
-                        self._destination_speed_applied = False
+                    # Part 2/3 — normal driving, clamped by speed-based braking toward the next
+                    # pending idle waypoint (stop at it) and toward the destination (reach it at
+                    # its configured speed). The strictest (nearest/slowest) constraint wins.
+                    if active_wp_idx is not None:
+                        target_speed = self._resolve_waypoint_speed(active_wp_idx)
+                    else:
+                        target_speed = self._resolve_cruise_speed()
+
+                    next_idle_idx = None
+                    for i in range(len(self.waypoints)):
+                        if (not self._waypoint_idle_complete[i]
+                                and self.waypoints[i].idle_time_s > 0.0):
+                            next_idle_idx = i
+                            break
+                    if next_idle_idx is not None:
+                        idle_dist = float(loc.distance(self.waypoints[next_idle_idx].transform.location))
+                        target_speed = min(target_speed,
+                                           self._braking_limited_speed_kmh(idle_dist, 0.0))
+
+                    destination_distance = float(loc.distance(self.destination))
+                    target_speed = min(
+                        target_speed,
+                        self._braking_limited_speed_kmh(destination_distance,
+                                                        self._resolve_destination_speed()),
+                    )
+
+                    self.agent.set_target_speed(target_speed)
 
                 # Apply control only if vehicle is still valid
                 if self._is_vehicle_valid():
@@ -2009,6 +2475,21 @@ class VehicleController:
         except Exception:
             pass
 
+    def _apply_wait_hold(self) -> None:
+        # Held before the actor is released (trigger/idle wait). set_target_speed(0)
+        # only stores a number on the agent; nothing applies control until the main
+        # drive loop, so on a slope the vehicle would roll. Apply an explicit handbrake
+        # hold to keep it parked in place.
+        vehicle = self.vehicle
+        if not vehicle or not vehicle.is_alive:
+            return
+        try:
+            vehicle.apply_control(
+                carla.VehicleControl(throttle=0.0, brake=1.0, hand_brake=True)
+            )
+        except Exception:
+            pass
+
 
 class PedestrianArrivalCriterion(AtomicBehavior):
     def __init__(self, walker: carla.Actor, destination: carla.Location, tolerance: float = 1.0):
@@ -2045,49 +2526,6 @@ class SetWalkerOrientation(AtomicBehavior):
         return py_trees_common.Status.SUCCESS
 
 
-class SmoothTurn(AtomicBehavior):
-    def __init__(self, walker: carla.Actor, target_yaw: float, duration: float, name: str,
-                 debug_enabled: bool = False):
-        super().__init__(name, walker)
-        self._target_yaw = _normalize_yaw(target_yaw)
-        self._duration = max(0.0, duration)
-        self._start_yaw: float = 0.0
-        self._delta: float = 0.0
-        self._start_time: float = 0.0
-        self._debug_enabled = debug_enabled
-
-    def initialise(self) -> None:  # type: ignore[override]
-        transform = self._actor.get_transform()
-        self._start_yaw = _normalize_yaw(transform.rotation.yaw)
-        self._delta = _normalize_yaw(self._target_yaw - self._start_yaw)
-        self._start_time = GameTime.get_time()
-
-        if abs(self._delta) < 1e-3 or self._duration <= 0.0:
-            transform.rotation.yaw = self._target_yaw
-            self._actor.set_transform(transform)
-            self._actor.apply_control(carla.WalkerControl())
-            self._duration = 0.0
-
-    def update(self) -> py_trees_common.Status:  # type: ignore[override]
-        if self._duration <= 0.0 or abs(self._delta) < 1e-3:
-            return py_trees_common.Status.SUCCESS
-
-        elapsed = GameTime.get_time() - self._start_time
-        t = min(max(elapsed / self._duration, 0.0), 1.0)
-        current_yaw = _normalize_yaw(self._start_yaw + self._delta * t)
-
-        transform = self._actor.get_transform()
-        transform.rotation.yaw = current_yaw
-        self._actor.set_transform(transform)
-        self._actor.apply_control(carla.WalkerControl())
-
-        if t >= 1.0:
-            if self._debug_enabled:
-                print(f"[SmoothTurn] {self.name} completed: final_yaw={current_yaw:.2f}")
-            return py_trees_common.Status.SUCCESS
-        return py_trees_common.Status.RUNNING
-
-
 class EnsureWalkerAt(AtomicBehavior):
     def __init__(self, walker: carla.Actor, target: carla.Transform, tolerance: float, name: str):
         super().__init__(name, walker)
@@ -2107,24 +2545,12 @@ class EnsureWalkerAt(AtomicBehavior):
             except Exception:
                 bbox_extent_z = 1.0
 
-            # Temporarily lift walker out of raycast path (like vse.py does for vehicles)
-            try:
-                lifted_location = carla.Location(
-                    current.location.x,
-                    current.location.y,
-                    current.location.z + 500.0
-                )
-                self._actor.set_location(lifted_location)
-            except Exception:
-                pass
-
             # Get ground height at target XY position
-            target_ground_height = get_ground_height(
+            target_ground_height = _walker_ground_height(
                 self._actor.get_world(),
+                self._actor,
                 self._target.location,
-                debug=False,
                 cached_map=self._actor.get_world().get_map(),
-                probe_on_miss=True
             )
 
             # Create corrected transform with grounded Z
@@ -2177,25 +2603,11 @@ class GroundedIdle(AtomicBehavior):
         except Exception:
             bbox_extent_z = 1.0
 
-        # Temporarily lift walker out of raycast path (like vse.py does for vehicles)
-        if self._actor and self._actor.is_alive:
-            try:
-                current_location = self._actor.get_location()
-                lifted_location = carla.Location(
-                    current_location.x,
-                    current_location.y,
-                    current_location.z + 500.0
-                )
-                self._actor.set_location(lifted_location)
-            except Exception:
-                pass
-
-        ground_height = get_ground_height(
+        ground_height = _walker_ground_height(
             self._world,
+            self._actor,
             self._target.location,
-            debug=False,
             cached_map=self._world.get_map(),
-            probe_on_miss=True
         )
 
         # Use just bbox_extent_z (not +0.2), matching the fix in other locations
@@ -2238,9 +2650,19 @@ class GroundedIdle(AtomicBehavior):
 
 
 class WalkToTarget(AtomicBehavior):
+    # Max body-yaw rate while walking (degrees per simulation second). The walker
+    # always moves along its current facing, so this also bounds how sharply the
+    # walked path curves through a corner.
+    TURN_RATE_DEG_S = 360.0
+    # Only write the facing via set_transform when the yaw actually changed by at
+    # least this much. In async/VIL mode each write applies a stale position and
+    # snaps the walker backward by ~1 server frame of motion, so per-tick no-op
+    # writes on straight legs cut the effective walking speed nearly in half.
+    YAW_WRITE_EPSILON_DEG = 0.5
+
     def __init__(self, walker: carla.Actor, target: carla.Location, speed: float, tolerance: float,
                  stuck_time: float, desired_yaw: Optional[float] = None, name: str = "WalkToTarget",
-                 debug_enabled: bool = False, is_destination: bool = False):
+                 debug_enabled: bool = False, is_destination: bool = False, pass_through: bool = False):
         super().__init__(name, walker)
         self._target = carla.Location(target.x, target.y, target.z)
         self._speed = max(0.01, speed)
@@ -2253,10 +2675,17 @@ class WalkToTarget(AtomicBehavior):
         self._debug_last_log_time: float = -1.0
         self._debug_enabled = debug_enabled
         self._is_destination = is_destination
+        self._pass_through = pass_through
+        self._current_yaw: Optional[float] = None
+        self._last_written_yaw: Optional[float] = None
+        self._last_update_time: Optional[float] = None
+        self._min_distance: float = float('inf')
 
     def initialise(self) -> None:  # type: ignore[override]
         self._last_progress_time = GameTime.get_time()
         self._last_distance = float('inf')
+        self._min_distance = float('inf')
+        self._last_update_time = None
         if self._actor and self._actor.is_alive:
             try:
                 transform = self._actor.get_transform()
@@ -2265,13 +2694,29 @@ class WalkToTarget(AtomicBehavior):
                 self._start_yaw = None
         else:
             self._start_yaw = None
+        self._current_yaw = self._start_yaw
+        self._last_written_yaw = self._start_yaw
 
     def update(self) -> py_trees_common.Status:  # type: ignore[override]
         now = GameTime.get_time()
         location = self._actor.get_location()
-        distance = location.distance(self._target)
+        # XY distance only: the walker's actor location is its body center (~1 m
+        # above ground) while waypoint Z is ground level, so a 3D distance can
+        # never reach the arrival tolerance.
+        distance = math.hypot(self._target.x - location.x, self._target.y - location.y)
 
-        if distance <= self._tolerance:
+        if self._pass_through:
+            # Walk straight through the waypoint: no stop control, no snap, no yaw
+            # set — the control stays live so the next leg continues seamlessly.
+            if distance <= self._tolerance:
+                return py_trees_common.Status.SUCCESS
+            # Corner arcs can skim past the tolerance circle on short legs: once the
+            # walker moves away again after a close approach, count the waypoint as passed.
+            if distance < self._min_distance:
+                self._min_distance = distance
+            elif self._min_distance < 1.0 and distance > self._min_distance + 0.3:
+                return py_trees_common.Status.SUCCESS
+        elif distance <= self._tolerance:
             if self._actor and self._actor.is_alive:
                 transform = self._actor.get_transform()
                 target_yaw = self._desired_yaw if self._desired_yaw is not None else self._start_yaw
@@ -2280,8 +2725,7 @@ class WalkToTarget(AtomicBehavior):
                 self._actor.set_transform(transform)
                 self._actor.apply_control(carla.WalkerControl())
             return py_trees_common.Status.SUCCESS
-
-        if distance <= self._tolerance + 0.05:
+        elif distance <= self._tolerance + 0.05:
             if self._actor and self._actor.is_alive:
                 transform = self._actor.get_transform()
                 target_yaw = self._desired_yaw if self._desired_yaw is not None else self._start_yaw
@@ -2293,24 +2737,12 @@ class WalkToTarget(AtomicBehavior):
                 except Exception:
                     bbox_extent_z = 1.0
 
-                # Temporarily lift walker out of raycast path (like vse.py does for vehicles)
-                try:
-                    lifted_location = carla.Location(
-                        transform.location.x,
-                        transform.location.y,
-                        transform.location.z + 500.0
-                    )
-                    self._actor.set_location(lifted_location)
-                except Exception:
-                    pass
-
                 # Get ground height at target XY position
-                target_ground_height = get_ground_height(
+                target_ground_height = _walker_ground_height(
                     self._actor.get_world(),
+                    self._actor,
                     self._target,
-                    debug=False,
                     cached_map=self._actor.get_world().get_map(),
-                    probe_on_miss=True
                 )
 
                 # Set target location with corrected Z
@@ -2323,35 +2755,52 @@ class WalkToTarget(AtomicBehavior):
                 self._actor.apply_control(carla.WalkerControl())
             return py_trees_common.Status.SUCCESS
 
-        if self._actor and self._actor.is_alive:
-            target_yaw = self._desired_yaw if self._desired_yaw is not None else self._start_yaw
-            if target_yaw is not None:
-                transform = self._actor.get_transform()
-                transform.rotation.yaw = target_yaw
-                self._actor.set_transform(transform)
+        # Rate-limited facing: swing the body toward the live bearing to the target
+        # and walk along the current facing, so motion and body orientation stay
+        # aligned (turn-while-walking arc instead of an instant pivot).
+        if self._last_update_time is None:
+            dt = 0.0
+        else:
+            dt = min(max(now - self._last_update_time, 0.0), 0.25)
+        self._last_update_time = now
 
-        direction_vec = carla.Vector3D(
-            self._target.x - location.x,
-            self._target.y - location.y,
-            0.0,
+        fallback_yaw = self._current_yaw if self._current_yaw is not None else 0.0
+        bearing = _compute_heading(location, self._target, fallback_yaw)
+        if self._current_yaw is None:
+            self._current_yaw = bearing
+        yaw_error = _normalize_yaw(bearing - self._current_yaw)
+        max_step = self.TURN_RATE_DEG_S * dt
+        if abs(yaw_error) <= max_step:
+            self._current_yaw = bearing
+        else:
+            self._current_yaw = _normalize_yaw(self._current_yaw + math.copysign(max_step, yaw_error))
+
+        yaw_changed = (
+            self._last_written_yaw is None
+            or abs(_normalize_yaw(self._current_yaw - self._last_written_yaw)) >= self.YAW_WRITE_EPSILON_DEG
         )
-        length = math.sqrt(direction_vec.x ** 2 + direction_vec.y ** 2)
-        if length > 0:
-            direction_vec.x /= length
-            direction_vec.y /= length
+        if yaw_changed and self._actor and self._actor.is_alive:
+            transform = self._actor.get_transform()
+            transform.rotation.yaw = self._current_yaw
+            self._actor.set_transform(transform)
+            self._last_written_yaw = self._current_yaw
 
+        yaw_rad = math.radians(self._current_yaw)
         control = carla.WalkerControl()
-        if length > 0:
-            control.direction = direction_vec
+        control.direction = carla.Vector3D(math.cos(yaw_rad), math.sin(yaw_rad), 0.0)
 
         speed = self._speed
-        if distance < 2.0:
+        if not self._pass_through and distance < 2.0:
             speed = min(speed, max(0.5, distance / 1.0))
         control.speed = speed
         self._actor.apply_control(control)
 
         if distance < self._last_distance - 0.05:
             self._last_distance = distance
+            self._last_progress_time = now
+        elif abs(_normalize_yaw(bearing - self._current_yaw)) > 15.0:
+            # Still swinging toward the new bearing (mid-corner) — distance to the
+            # target may legitimately grow; don't count this as stuck.
             self._last_progress_time = now
         else:
             time_since_progress = now - self._last_progress_time
@@ -2368,24 +2817,12 @@ class WalkToTarget(AtomicBehavior):
                 except Exception:
                     bbox_extent_z = 1.0
 
-                # Temporarily lift walker out of raycast path (like vse.py does for vehicles)
-                try:
-                    lifted_location = carla.Location(
-                        transform.location.x,
-                        transform.location.y,
-                        transform.location.z + 500.0
-                    )
-                    self._actor.set_location(lifted_location)
-                except Exception:
-                    pass
-
                 # Get ground height at target XY position
-                target_ground_height = get_ground_height(
+                target_ground_height = _walker_ground_height(
                     self._actor.get_world(),
+                    self._actor,
                     self._target,
-                    debug=False,
                     cached_map=self._actor.get_world().get_map(),
-                    probe_on_miss=True
                 )
 
                 # Set target location with corrected Z
@@ -2654,6 +3091,168 @@ class AllPedestriansArrivedCriterion(Criterion):
         return py_trees_common.Status.RUNNING
 
 
+def _actor_obb_2d(actor, transform, margin: float = 0.0):
+    """Build a 2D oriented bounding box (footprint) + vertical extent for an actor.
+
+    Returns a dict with the four world-space footprint corners, the two box orientation
+    axes (for the Separating Axis Theorem), the center, a bounding radius (for broad-phase),
+    and the world Z range. Returns None if the geometry can't be read.
+
+    Pure math from the actor's static ``bounding_box`` and a (cached) world transform, so it
+    needs no physics — this is what lets us detect collisions on a teleported, physics-disabled
+    ego where CARLA's collision sensor never fires.
+    """
+    if actor is None or transform is None:
+        return None
+    try:
+        bb = actor.bounding_box  # static, cached on the actor; no RPC
+        ext = bb.extent
+    except Exception:
+        return None
+
+    yaw = math.radians(transform.rotation.yaw)
+    cos_y = math.cos(yaw)
+    sin_y = math.sin(yaw)
+    # Box-orientation axes in the XY plane.
+    ux, uy = cos_y, sin_y           # forward (local +x)
+    vx, vy = -sin_y, cos_y          # left    (local +y)
+
+    # World center of the box: actor origin + the box's local offset rotated into world.
+    bx, by, bz = bb.location.x, bb.location.y, bb.location.z
+    cx = transform.location.x + (bx * cos_y - by * sin_y)
+    cy = transform.location.y + (bx * sin_y + by * cos_y)
+    cz = transform.location.z + bz
+
+    ex = ext.x + margin
+    ey = ext.y + margin
+    ez = ext.z + margin
+
+    # Four footprint corners (center ± ex*u ± ey*v).
+    corners = [
+        (cx + ux * ex + vx * ey, cy + uy * ex + vy * ey),
+        (cx + ux * ex - vx * ey, cy + uy * ex - vy * ey),
+        (cx - ux * ex - vx * ey, cy - uy * ex - vy * ey),
+        (cx - ux * ex + vx * ey, cy - uy * ex + vy * ey),
+    ]
+    return {
+        "corners": corners,
+        "axes": [(ux, uy), (vx, vy)],
+        "center": (cx, cy),
+        "radius": math.hypot(ex, ey),
+        "z_min": cz - ez,
+        "z_max": cz + ez,
+    }
+
+
+def _obb_overlap_2d(a, b) -> bool:
+    """Separating Axis Theorem overlap test for two oriented quads (footprints).
+
+    Two convex boxes overlap iff their projections overlap on every face-normal axis of
+    both boxes (4 axes in 2D). A single gap on any axis proves they're separate.
+    """
+    for axis in (a["axes"][0], a["axes"][1], b["axes"][0], b["axes"][1]):
+        ax, ay = axis
+        a_dots = [cx * ax + cy * ay for cx, cy in a["corners"]]
+        b_dots = [cx * ax + cy * ay for cx, cy in b["corners"]]
+        if max(a_dots) < min(b_dots) or max(b_dots) < min(a_dots):
+            return False
+    return True
+
+
+class GeometricCollisionTest(Criterion):
+    """Physics-free collision criterion for the VIL / external ego.
+
+    A teleport-driven ego has CARLA physics disabled, so the ``sensor.other.collision`` that
+    scenario_runner's ``CollisionTest`` relies on never fires. This criterion instead checks,
+    each tick, whether the ego's oriented bounding box overlaps any scenario vehicle or
+    pedestrian (2D footprint via SAT, gated by a vertical-extent check so stacked actors on a
+    bridge/overpass don't false-trigger). Each colliding actor is counted at most once.
+
+    Reports under the name "CollisionTest" with ``actor=ego`` so the results table renders
+    identically to the sensor-based criterion it replaces.
+    """
+
+    # Extra inflation (metres) applied to every box extent before the overlap test. 0.0 = exact
+    # touch. Tuning knob; bump slightly if near-misses should count as contact.
+    COLLISION_MARGIN_M = 0.0
+
+    def __init__(self, scenario: "vse_play", ego_actor: carla.Actor):
+        super().__init__("CollisionTest", actor=ego_actor, optional=False)
+        self._scenario = scenario
+        self._ego = ego_actor
+        self.actual_value = 0
+        self.success_value = 0
+        self.units = "times"
+        self._collided_ids: set = set()
+
+    def _iter_targets(self):
+        """Yield live scenario vehicles and pedestrians, excluding the ego itself."""
+        ego_id = self._ego.id if self._ego else None
+        for actor in list(self._scenario._vehicle_actors) + list(self._scenario.other_actors):
+            if actor is None or actor.id == ego_id:
+                continue
+            try:
+                if not actor.is_alive:
+                    continue
+            except Exception:
+                continue
+            yield actor
+
+    def update(self) -> py_trees_common.Status:  # type: ignore[override]
+        if not self._ego:
+            return py_trees_common.Status.RUNNING
+        try:
+            if not self._ego.is_alive:
+                return py_trees_common.Status.RUNNING
+        except Exception:
+            return py_trees_common.Status.RUNNING
+
+        ego_tf = CarlaDataProvider.get_transform(self._ego)
+        ego_obb = _actor_obb_2d(self._ego, ego_tf, self.COLLISION_MARGIN_M)
+        if ego_obb is None:
+            return py_trees_common.Status.RUNNING
+
+        for actor in self._iter_targets():
+            if actor.id in self._collided_ids:
+                continue
+            tf = CarlaDataProvider.get_transform(actor)
+            obb = _actor_obb_2d(actor, tf, self.COLLISION_MARGIN_M)
+            if obb is None:
+                continue
+            # Broad-phase: skip the SAT math for actors clearly out of reach.
+            ex, ey = ego_obb["center"]
+            ox, oy = obb["center"]
+            if math.hypot(ex - ox, ey - oy) > ego_obb["radius"] + obb["radius"]:
+                continue
+            # Vertical gate: footprints overlapping but at different heights (e.g. an overpass)
+            # is not a collision.
+            if ego_obb["z_min"] > obb["z_max"] or obb["z_min"] > ego_obb["z_max"]:
+                continue
+            if not _obb_overlap_2d(ego_obb, obb):
+                continue
+
+            # Collision.
+            self._collided_ids.add(actor.id)
+            self.actual_value += 1
+            self.test_status = "FAILURE"
+            self._scenario.log(
+                f"[COLLISION] Geometric collision: ego vs {actor.type_id} (id={actor.id}); "
+                f"total={self.actual_value}"
+            )
+            try:
+                from srunner.scenariomanager.traffic_events import TrafficEvent, TrafficEventType
+                is_ped = "walker" in actor.type_id
+                ev_type = (
+                    TrafficEventType.COLLISION_PEDESTRIAN if is_ped
+                    else TrafficEventType.COLLISION_VEHICLE
+                )
+                self.events.append(TrafficEvent(event_type=ev_type))
+            except Exception:
+                pass
+
+        return py_trees_common.Status.RUNNING
+
+
 class DestinationCriterion(AtomicBehavior):
     def __init__(self, vehicle: carla.Actor, destination: carla.Location):
         super().__init__("VehicleDestinationCriterion", vehicle)
@@ -2775,7 +3374,7 @@ class TrafficLightTriggerMonitor(Behaviour):
 
         # Start first step
         trigger.current_step = 0
-        trigger.step_start_tick = self.scenario._global_tick_counter
+        trigger.step_start_time = GameTime.get_time()
         trigger.sequence_completed = False
         self._execute_sequence_step(idx, trigger)
 
@@ -2803,7 +3402,7 @@ class TrafficLightTriggerMonitor(Behaviour):
                   f"WARNING: Invalid color '{step.get('color')}' in trigger {idx} step {trigger.current_step}, skipping")
             # Skip to next step
             trigger.current_step += 1
-            trigger.step_start_tick = self.scenario._global_tick_counter
+            trigger.step_start_time = GameTime.get_time()
             self._execute_sequence_step(idx, trigger)
             return
 
@@ -2835,16 +3434,21 @@ class TrafficLightTriggerMonitor(Behaviour):
 
             step = trigger.sequence[trigger.current_step]
             duration_ticks = step.get("duration_ticks", 0)
-            elapsed_ticks = current_tick - trigger.step_start_tick
+            # Phase completion is timed in GameTime seconds, not tree ticks, so a phase holds
+            # for its authored duration regardless of tick rate. In sync@20Hz GameTime advances
+            # 0.05s/tick, so this flips on the same tick as the old tick count; in async (VIL),
+            # where the tree ticks far slower than 20Hz, it no longer over-runs.
+            duration_s = duration_ticks / 20.0
+            elapsed_s = GameTime.get_time() - trigger.step_start_time
 
-            if elapsed_ticks >= duration_ticks:
+            if elapsed_s >= duration_s:
                 # Step complete
                 print(f"[TRAFFIC_LIGHT] Tick {current_tick}: "
                       f"Trigger {idx} step {trigger.current_step + 1}/{len(trigger.sequence)} complete")
 
                 # Move to next step
                 trigger.current_step += 1
-                trigger.step_start_tick = current_tick
+                trigger.step_start_time = GameTime.get_time()
                 self._execute_sequence_step(idx, trigger)
 
     def _complete_trigger_sequence(self, idx: int, trigger: TrafficLightTrigger) -> None:
@@ -3089,9 +3693,14 @@ class VehicleLightsBehavior(py_trees.behaviour.Behaviour):
 
 class vse_play(BasicScenario):
     def __init__(self, world, ego_vehicles, config, randomize=False, debug_mode=False,
-                 criteria_enable=True, timeout=18000, vehicle_control_mode=None):
+                 criteria_enable=True, timeout=18000, vehicle_control_mode=None,
+                 ego_physics_off=False):
         global _current_scenario
 
+        # True when the ego runs with CARLA physics disabled (external/VIL ego). Set before
+        # super().__init__() because that triggers _create_test_criteria, which uses it to choose
+        # the geometric collision criterion over the (then-dead) sensor-based CollisionTest.
+        self._ego_physics_off = bool(ego_physics_off)
         self._vehicle_control_mode_override = vehicle_control_mode
         self.timeout = timeout
         # Keep reference to the incoming config for downstream helpers that expect it.
@@ -3280,11 +3889,12 @@ class vse_play(BasicScenario):
 
             default_speed_kmh = actor.get("speed_km_h", 5.0)
             initial_idle_time = actor.get("idle_time_s", 0.0)
-            default_turn_time = actor.get("turn_time_s", 0.0)
 
+            # A pedestrian with no waypoints simply stands still at its spawn pose for the
+            # whole scenario (mirrors a vehicle with no waypoints). The empty route flows
+            # through _prepare_routes / _build_pedestrian_route, which both handle the
+            # empty-segments case, and the pedestrian is immediately marked "arrived".
             waypoints = actor.get("waypoints", [])
-            if not waypoints:
-                raise RuntimeError(f"No waypoints defined for pedestrian {idx}")
 
             route = []
             for wp in waypoints:
@@ -3301,7 +3911,6 @@ class vse_play(BasicScenario):
                     "speed_km_h": wp.get("speed_km_h", default_speed_kmh),
                     "speed_deviation_km_h": deviation_val,
                     "idle_time_s": wp.get("idle_time_s", 0.0),
-                    "turn_time_s": wp.get("turn_time_s", default_turn_time),
                     "is_destination": str(wp.get("index")) == "destination",
                 })
 
@@ -3327,7 +3936,6 @@ class vse_play(BasicScenario):
                 "route": route,
                 "initial_idle_time": initial_idle_time,
                 "default_speed_kmh": default_speed_kmh,
-                "default_turn_time": default_turn_time,
             }
             if pedestrian_trigger:
                 ped_data["trigger"] = pedestrian_trigger
@@ -3355,32 +3963,43 @@ class vse_play(BasicScenario):
                 current_location = spawn_location
                 current_heading = spawn_rotation.yaw
 
+                # Departure-speed semantics: the speed/deviation assigned to a
+                # point governs the leg that LEAVES it. The first leg leaves the
+                # spawn at the pedestrian's initial speed (no deviation); each
+                # later leg carries the speed of the waypoint just departed. The
+                # destination waypoint's speed is therefore never used to travel.
+                departure_speed_kmh = ped_data.get("default_speed_kmh", 0.0)
+                departure_deviation_kmh = 0
+
                 for index, waypoint in enumerate(route, start=1):
+                    # A leg's speed is the *departure* speed of the point it leaves.
+                    # A planned departure speed of 0 means the pedestrian cannot
+                    # traverse this leg: it stands still at the current point (spawn,
+                    # or the waypoint it just reached) for the rest of the scenario
+                    # rather than teleporting to the leg's target. Truncate the route
+                    # here — the last reachable point becomes the effective
+                    # destination (forced to stop, so the walker halts instead of
+                    # walking straight through and drifting), and the shortened (or
+                    # empty) segment list flows through the existing handling.
+                    try:
+                        planned_departure_kmh = float(departure_speed_kmh)
+                    except (TypeError, ValueError):
+                        planned_departure_kmh = 0.0
+                    # Match how _resolve_walk_speed_mps rounds: any speed that rounds
+                    # to 0 km/h (i.e. < 0.5) cannot be walked. Deviation is ignored on
+                    # purpose — authoring 0 means "stop", not "maybe move a little".
+                    if int(round(planned_departure_kmh)) <= 0:
+                        if segments:
+                            segments[-1].is_destination = True
+                        break
+
                     # Use exact waypoint location from JSON (already validated by editor)
                     target = carla.Location(
                         waypoint["location"].x,
                         waypoint["location"].y,
                         waypoint["location"].z
                     )
-                    planned_speed_kmh = waypoint.get("speed_km_h", 0.0)
-                    try:
-                        planned_speed_kmh = float(planned_speed_kmh)
-                    except Exception:
-                        planned_speed_kmh = 0.0
-                    deviation_val = waypoint.get("speed_deviation_km_h", 0)
-                    try:
-                        deviation_kmh = int(float(deviation_val or 0))
-                    except Exception:
-                        deviation_kmh = 0
-                    if deviation_kmh < 0:
-                        deviation_kmh = 0
-
-                    speed_kmh = int(round(planned_speed_kmh))
-                    if deviation_kmh:
-                        speed_kmh += random.randint(-deviation_kmh, deviation_kmh)
-                    if speed_kmh < 0:
-                        speed_kmh = 0
-                    speed_mps = speed_kmh / 3.6
+                    speed_mps = _resolve_walk_speed_mps(departure_speed_kmh, departure_deviation_kmh)
                     distance = _distance(current_location, target)
                     heading = _compute_heading(current_location, target, current_heading)
 
@@ -3392,39 +4011,33 @@ class vse_play(BasicScenario):
                         distance=distance,
                         heading=heading,
                         idle_after=max(0.0, waypoint["idle_time_s"]),
-                        turn_time=max(0.0, waypoint["turn_time_s"]),
                         is_destination=waypoint["is_destination"],
                     )
                     segments.append(segment)
+                    # This waypoint's own speed/deviation becomes the departure
+                    # speed for the next leg (carried until the following waypoint).
+                    departure_speed_kmh = waypoint.get("speed_km_h", 0.0)
+                    departure_deviation_kmh = waypoint.get("speed_deviation_km_h", 0)
                     current_location = target
                     current_heading = heading
-
-                for idx, segment in enumerate(segments):
-                    if idx + 1 < len(segments):
-                        nxt = segments[idx + 1]
-                        segment.next_heading = nxt.heading
-                        segment.turn_radius = _estimate_turn_radius(
-                            segment.heading,
-                            nxt.heading,
-                            max(segment.distance, 1.0),
-                            max(nxt.distance, 1.0),
-                        )
-                    else:
-                        segment.next_heading = segment.heading
-                        segment.turn_radius = None
 
                 total_time = initial_idle_time
                 for segment in segments:
                     travel_time = segment.distance / segment.speed if segment.speed > 0 else 0.0
                     total_time += travel_time + segment.idle_after
-                    if not segment.is_destination:
-                        total_time += segment.turn_time
 
                 self.all_segments.append(segments)
                 self.expected_durations.append(total_time)
                 final_destination = segments[-1].target if segments else spawn_location
                 self.final_destinations.append(final_destination)
 
+                # Spawn the walker already facing its first waypoint, before any trigger fires.
+                # segments[0].heading is the bearing to the first waypoint (same atan2 the editor
+                # uses) and matches what ActorTransformSetter applies at trigger time, so there is
+                # no visible snap. Deriving from segments (not the stored yaw) also corrects older
+                # scenarios saved with rotation 0,0,0. Routeless pedestrians keep their spawn yaw.
+                if segments:
+                    spawn_rotation.yaw = segments[0].heading
                 ped_data["spawn_location"] = spawn_location
                 ped_data["spawn_rotation"] = spawn_rotation
                 ped_data["spawn_transform"] = carla.Transform(spawn_location, spawn_rotation)
@@ -3626,7 +4239,6 @@ class vse_play(BasicScenario):
                         "yaw": start_yaw,
                         "speed_km_h": ego_entry.get("speed_km_h", 0.0),
                         "idle_time_s": 0.0,
-                        "turn_time_s": 0.0,
                         "auto_generated": True,
                         "is_destination": False,
                     },
@@ -3710,8 +4322,18 @@ class vse_play(BasicScenario):
             and not (_is_large_map(self._map) and os.environ.get("VSE_FORCE_ROUTE_INTERPOLATION") != "1")
         )
         if should_interpolate:
+            # Interpolate at a coarse hop so InRouteTest's fixed 5-point look-ahead window spans more
+            # distance (5 points x hop): at 3 m that's ~15 m, enough that the criterion's route index
+            # can't stall when the externally-driven ego advances several metres between ticks
+            # (teleports / tick gaps), which otherwise inflated the measured off-route distance and
+            # failed InRouteTest spuriously. Tunable via $VSE_CRITERIA_ROUTE_HOP_M (default 3.0).
             try:
-                _, interpolated = interpolate_trajectory(keypoints, hop_resolution=1.0)
+                hop_m = float(os.environ.get("VSE_CRITERIA_ROUTE_HOP_M", "3.0") or 3.0)
+            except Exception:
+                hop_m = 3.0
+            hop_m = min(25.0, max(0.5, hop_m))
+            try:
+                _, interpolated = interpolate_trajectory(keypoints, hop_resolution=hop_m)
                 if interpolated:
                     route = list(interpolated)
             except Exception as exc:
@@ -4058,9 +4680,22 @@ class vse_play(BasicScenario):
         for segment in segments:
             seg_name = f"Ped{ped_index}_Segment{segment.index}"
 
-            if segment.distance > 0.05 and segment.speed > 0:
-                # Use larger tolerance for destination segments to prevent overshooting
-                tolerance = 0.5 if segment.is_destination else 0.15
+            walkable = segment.distance > 0.05 and segment.speed > 0
+            # Waypoints without idle are walked straight through: no align/stop,
+            # the next leg's WalkToTarget turns smoothly into the new direction.
+            pass_through = walkable and segment.idle_after <= 0 and not segment.is_destination
+
+            if walkable:
+                # Larger tolerance where exact arrival doesn't matter (pass-through
+                # corners and the final destination) to prevent overshooting. The
+                # pass-through tolerance must also exceed the walker's minimum
+                # turning radius (speed / turn rate) or a sharp corner could orbit
+                # the waypoint instead of arriving.
+                if pass_through:
+                    min_turn_radius = segment.speed / math.radians(WalkToTarget.TURN_RATE_DEG_S)
+                    tolerance = max(0.5, 1.2 * min_turn_radius)
+                else:
+                    tolerance = 0.5 if segment.is_destination else 0.15
                 sequence.add_child(WalkToTarget(
                     walker,
                     segment.target,
@@ -4070,6 +4705,7 @@ class vse_play(BasicScenario):
                     desired_yaw=segment.heading,
                     debug_enabled=self._debug,
                     is_destination=segment.is_destination,
+                    pass_through=pass_through,
                     name=f"{seg_name}_Walk",
                 ))
             else:
@@ -4086,24 +4722,8 @@ class vse_play(BasicScenario):
                     name=f"{seg_name}_Snap",
                 ))
 
-            align_transform = carla.Transform(
-                segment.target,
-                carla.Rotation(
-                    pitch=spawn_rotation.pitch,
-                    yaw=segment.heading,
-                    roll=spawn_rotation.roll,
-                ),
-            )
-
-            sequence.add_child(EnsureWalkerAt(
-                walker,
-                align_transform,
-                tolerance=0.05,
-                name=f"{seg_name}_Align",
-            ))
-
-            if segment.idle_after > 0:
-                idle_transform = carla.Transform(
+            if not pass_through:
+                align_transform = carla.Transform(
                     segment.target,
                     carla.Rotation(
                         pitch=spawn_rotation.pitch,
@@ -4111,23 +4731,30 @@ class vse_play(BasicScenario):
                         roll=spawn_rotation.roll,
                     ),
                 )
-                sequence.add_child(GroundedIdle(
+
+                sequence.add_child(EnsureWalkerAt(
                     walker,
-                    idle_transform,
-                    duration=segment.idle_after,
-                    world=self._world,
-                    name=f"{seg_name}_Idle",
+                    align_transform,
+                    tolerance=0.05,
+                    name=f"{seg_name}_Align",
                 ))
 
-            if segment.next_heading is not None and not segment.is_destination:
-                turn_duration = max(0.0, segment.turn_time)
-                sequence.add_child(SmoothTurn(
-                    walker,
-                    segment.next_heading,
-                    duration=turn_duration,
-                    name=f"{seg_name}_Turn",
-                    debug_enabled=self._debug,
-                ))
+                if segment.idle_after > 0:
+                    idle_transform = carla.Transform(
+                        segment.target,
+                        carla.Rotation(
+                            pitch=spawn_rotation.pitch,
+                            yaw=segment.heading,
+                            roll=spawn_rotation.roll,
+                        ),
+                    )
+                    sequence.add_child(GroundedIdle(
+                        walker,
+                        idle_transform,
+                        duration=segment.idle_after,
+                        world=self._world,
+                        name=f"{seg_name}_Idle",
+                    ))
 
         return sequence
 
@@ -4182,8 +4809,13 @@ class vse_play(BasicScenario):
             CarlaDataProvider.register_actor(vehicle)
             self._vehicle_actors.append(vehicle)
 
+            # NPCs that ignore vehicles keep the stock BasicAgent (deterministic, no
+            # obstacle detection). NPCs that DO consider vehicles use _NpcBasicAgent,
+            # which adds graduated braking; their detection range/brake strength is then
+            # widened by _apply_npc_detection_tuning() below.
+            agent_cls = BasicAgent if data.ignore_vehicles else _NpcBasicAgent
             try:
-                agent = BasicAgent(
+                agent = agent_cls(
                     vehicle,
                     target_speed=data.initial_speed,
                     map_inst=self._map,
@@ -4193,17 +4825,19 @@ class vse_play(BasicScenario):
                 # Fall back to constructing the agent without an explicit map instance,
                 # but still avoid GRP precomputation (VSE uses set_global_plan()).
                 try:
-                    agent = BasicAgent(
+                    agent = agent_cls(
                         vehicle,
                         target_speed=data.initial_speed,
                         grp_inst=_NoopGlobalRoutePlanner(),
                     )
                 except Exception:
-                    agent = BasicAgent(vehicle, target_speed=data.initial_speed)
+                    agent = agent_cls(vehicle, target_speed=data.initial_speed)
             agent.ignore_traffic_lights(data.ignore_traffic_lights)
             agent.ignore_stop_signs(data.ignore_stop_signs)
             agent.ignore_vehicles(data.ignore_vehicles)
             agent.follow_speed_limits(False)
+            if not data.ignore_vehicles:
+                _apply_npc_detection_tuning(agent)
 
             self._setup_vehicle_route(agent, vehicle, data)
 
@@ -4385,25 +5019,13 @@ class vse_play(BasicScenario):
                             except Exception:
                                 bbox_extent_z = 1.0
 
-                            # Temporarily lift walker out of raycast path (like vse.py does for vehicles)
-                            try:
-                                current_loc = walker.get_location()
-                                lifted_location = carla.Location(
-                                    current_loc.x,
-                                    current_loc.y,
-                                    current_loc.z + 500.0
-                                )
-                                walker.set_location(lifted_location)
-                            except Exception:
-                                pass
-
                             # Get ground height at current XY position
-                            ground_height = get_ground_height(
+                            current_loc = walker.get_location()
+                            ground_height = _walker_ground_height(
                                 self.scenario.world,
+                                walker,
                                 current_loc,
-                                debug=False,
                                 cached_map=self.scenario.world.get_map(),
-                                probe_on_miss=True
                             )
 
                             # Set walker with corrected Z (just bbox_extent_z, no extra offset)
@@ -4571,11 +5193,18 @@ class vse_play(BasicScenario):
 
         ego_actor = self.ego_vehicles[0] if self.ego_vehicles else None
         if ego_actor:
+            # An external/VIL ego runs with CARLA physics disabled (see _run_preflight), so the
+            # sensor-based CollisionTest can never fire. Swap in the geometric (bounding-box)
+            # collision test for that case; keep the sensor-based one when physics is on.
+            ego_physics_off = bool(getattr(self, "_ego_physics_off", False))
+            collision_criterion = (
+                GeometricCollisionTest(self, ego_actor) if ego_physics_off
+                else CollisionTest(ego_actor)
+            )
             ego_criteria: List[Criterion] = [
-                CollisionTest(ego_actor),
+                collision_criterion,
                 KeepLaneTest(ego_actor),
                 OffRoadTest(ego_actor),
-                EndofRoadTest(ego_actor),
                 OnSidewalkTest(ego_actor),
                 RunningRedLightTest(ego_actor),
                 RunningStopTest(ego_actor),
@@ -5378,6 +6007,8 @@ class MiniRunner:
         agent_mode: str = "autopilot",
         agent_behavior: str = "normal",
         vehicle_control_mode: str = "basic_agent",
+        disable_ego_collision: bool = False,
+        disable_ego_physics: bool = False,
     ):
         self.client = client
         self.world = world
@@ -5396,6 +6027,8 @@ class MiniRunner:
         self.agent_mode = agent_mode if agent_mode in ("autopilot", "human", "custom") else "autopilot"
         self.agent_behavior = agent_behavior if agent_behavior in ("cautious", "normal", "aggressive") else "normal"
         self.vehicle_control_mode = vehicle_control_mode if vehicle_control_mode in ("basic_agent", "velocity") else "basic_agent"
+        self._disable_ego_collision = bool(disable_ego_collision)
+        self._disable_ego_physics = bool(disable_ego_physics)
         try:
             self.ros_goal_interval = max(0.0, float(os.environ.get("VSE_GOAL_INTERVAL", "0.25")))
         except Exception:
@@ -5409,6 +6042,11 @@ class MiniRunner:
         self._route_json_destination: Optional[carla.Location] = None
         self._full_route_for_criteria: Optional[List[Tuple[carla.Transform, RoadOption]]] = None
         self._ros_agent_proc: Optional[multiprocessing.Process] = None
+        # Graceful cancel handshake with the agent subprocess: _stop_ros_agent_process sets
+        # cancel_now and waits for cancel_done so the route is cancelled while the agent is
+        # still healthy (clean /planning/cancel_route reply) instead of during SIGTERM teardown.
+        self._ros_agent_cancel_now = None
+        self._ros_agent_cancel_done = None
         self._prepped_ego_actor: Optional[carla.Actor] = None
         self._spawned_internal_ego_id: Optional[int] = None
         self._cleanup_lock = threading.Lock()
@@ -5424,6 +6062,22 @@ class MiniRunner:
         self._ego_controller: Optional[VehicleController] = None
         self._internal_ego_vehicle_data: Optional[VehicleData] = None
         self._ego_arrival_mark: Optional[float] = None
+        self._last_world_frame: Optional[int] = None
+        self._criteria_tree = None  # detached from scenario_tree; ticked separately in _run
+        self._criteria_nodes: List = []  # individual criterion leaves ticked each frame
+        self._criteria_armed = False  # criteria start evaluating once ego localized at route start
+        self._route_start: Optional[carla.Location] = None
+        self._route_start_enter_t: Optional[float] = None  # when ego entered start radius (arm dwell)
+        # External/VIL ego: seconds the ego must remain within the arrival radius before the run
+        # ends ("stable arrival" dwell). Default 2.0 (settle so the table doesn't pop the instant
+        # the ego clips the radius); set $VSE_EXTERNAL_EGO_ARRIVAL_DWELL_S to tune (0 = end
+        # immediately on arrival, like the local agent).
+        try:
+            self._external_ego_arrival_dwell_s = max(
+                0.0, float(os.environ.get("VSE_EXTERNAL_EGO_ARRIVAL_DWELL_S", "2.0") or 2.0)
+            )
+        except Exception:
+            self._external_ego_arrival_dwell_s = 2.0
         self._has_ego_vehicle: Optional[bool] = None
         self._forced_green_lights: List[carla.Actor] = []
         self._large_map_active = False
@@ -5433,8 +6087,14 @@ class MiniRunner:
         except Exception:
             carla_map = None
         self._large_map_active = _is_large_map(carla_map)
+        # External-ego routes are published to the ROS agent (carla_minimal_agent) and consumed by
+        # autoware_mini's lanelet2 global planner, which re-routes on its own Lanelet2 map from the
+        # goal/via points and never reads the OpenDRIVE-interpolated corridor. The GRP/OpenDRIVE
+        # interpolation is therefore wasted work for that path, so skip it for any map size (not just
+        # large maps). Set VSE_FORCE_ROUTE_INTERPOLATION=1 to restore GRP interpolation — needed only
+        # if the route is consumed directly (e.g. autoware_mini global_planner:=carla).
         self._skip_route_interpolation = (
-            self._large_map_active and os.environ.get("VSE_FORCE_ROUTE_INTERPOLATION") != "1"
+            os.environ.get("VSE_FORCE_ROUTE_INTERPOLATION") != "1"
         )
 
     def _diag(self, message: str) -> None:
@@ -5592,6 +6252,26 @@ class MiniRunner:
             return None
         self._prepped_ego_actor = ego_actor
 
+        # Optional "ghost ego": disable collision response on the ego only (physics stays on so
+        # it remains drivable). Covers both internal and external/VIL ego since both converge here.
+        if ego_actor is not None and self._disable_ego_collision:
+            try:
+                ego_actor.set_collisions(False)
+                self.log("Ego collision DISABLED (ghost ego).")
+            except Exception as exc:
+                self.log(f"Failed to disable ego collision: {exc}")
+
+        # Optional: disable CARLA physics ONLY on an external/VIL ego, whose motion is driven by
+        # an outside stack via teleport. The internal/local ego is driven by physics (apply_control)
+        # and held on the road by physics, so we must NOT disable it (it would freeze / fall through
+        # the ground). For the local ego, "Ego Physics off" reduces to "collision off" (handled above).
+        if ego_actor is not None and self._disable_ego_physics and self.wait_for_ego:
+            try:
+                ego_actor.set_simulate_physics(False)
+                self.log("Ego physics DISABLED (external/VIL ego).")
+            except Exception as exc:
+                self.log(f"Failed to disable ego physics: {exc}")
+
         if self._stop_requested:
             self._preflight_failure_reason = "stopped by user"
             return None
@@ -5653,6 +6333,7 @@ class MiniRunner:
             criteria_enable=True,
             timeout=self.timeout_s,
             vehicle_control_mode=self.vehicle_control_mode,
+            ego_physics_off=bool(self._disable_ego_physics and self.wait_for_ego),
         )
         self._diag("run: build-scenario vse_play init done")
         # Set ego destination from JSON waypoint data for arrival detection
@@ -5672,6 +6353,39 @@ class MiniRunner:
                 self.log(f"Ego route for criteria set from agent plan ({len(criteria_route)} points).")
             except Exception as exc:
                 self.log(f"Failed to set ego criteria route from agent plan: {exc}")
+
+        # Detach the criteria from the scenario tree and tick each one ourselves (in _run). Two
+        # reasons:
+        #  - scenario_tree is a SUCCESS_ON_ONE Parallel of [behavior, criteria_tree]; when the
+        #    behavior subtree (pedestrians AND vehicles) finishes, py_trees stops the still-running
+        #    criteria_tree (terminate -> INIT->FAILURE), which froze RouteCompletionTest at ~2.38%
+        #    when the behavior finished before the ego arrived.
+        #  - criteria_tree itself is a Parallel that stops all children if any one reaches FAILURE.
+        # Ticking each criterion leaf individually isolates them: no actor finishing early and no
+        # other criterion can terminate RouteCompletionTest, so it evaluates for the whole drive.
+        self._criteria_tree = None
+        self._criteria_nodes = []
+        try:
+            st = getattr(self._scenario, "scenario_tree", None)
+            ct = getattr(self._scenario, "criteria_tree", None)
+            if st is not None and ct is not None and ct in getattr(st, "children", []):
+                st.remove_child(ct)
+                self._criteria_tree = ct
+                self._criteria_nodes = list(getattr(ct, "children", []))
+                self._diag(f"run: detached criteria_tree ({len(self._criteria_nodes)} criteria) from scenario_tree")
+        except Exception as exc:
+            self.log(f"Could not detach criteria_tree (criteria may terminate early): {exc}")
+
+        # Route start for the criteria arm-gate (see _ego_at_route_start). First point of the criteria
+        # route, falling back to the JSON ego destination's counterpart (the loaded route start).
+        self._route_start = None
+        try:
+            route = getattr(self._scenario, "_ego_route_for_criteria", None)
+            if route:
+                self._route_start = route[0][0].location
+        except Exception:
+            self._route_start = None
+
         if ego_actor and internal_ego_vehicle_data and not self.wait_for_ego:
             self._ego_controller = self._start_internal_ego_controller(ego_actor, internal_ego_vehicle_data)
             if not self._ego_controller:
@@ -5707,6 +6421,9 @@ class MiniRunner:
     def _run(self):
         self._running = True
         self._diag("run: enter")
+        self._last_world_frame = None
+        self._criteria_armed = False
+        self._route_start_enter_t = None
         reason = ""
         start_system_time = time.time()
         start_game_time = GameTime.get_time()
@@ -5749,6 +6466,16 @@ class MiniRunner:
                 if not snapshot:
                     continue
 
+                # Only advance time/criteria once per real world frame. In ros tick-mode _tick_world
+                # falls back to world.get_snapshot() when wait_for_tick starves (e.g. the in-GUI
+                # MiniRunner thread losing the tick stream); that can return the same frame
+                # repeatedly, and processing it again would double-feed GameTime and busy-spin.
+                frame = getattr(snapshot, "frame", None)
+                if frame is not None and frame == self._last_world_frame:
+                    time.sleep(0.005)
+                    continue
+                self._last_world_frame = frame
+
                 GameTime.on_carla_tick(snapshot.timestamp)
                 CarlaDataProvider.on_carla_tick()
 
@@ -5757,6 +6484,35 @@ class MiniRunner:
                         self._scenario.scenario_tree.tick_once()
                     except Exception:
                         pass
+                # Tick each criterion individually (detached from scenario_tree) so neither the
+                # behavior subtree finishing nor any sibling criterion can terminate the criteria
+                # mid-run (which froze RouteCompletionTest at ~2.38%). See _run_build_scenario / docs.
+                # Don't evaluate criteria until the externally-driven ego is localized at the route
+                # start. At run start awmini's pose relay can briefly hold the ego at its previous
+                # pose (e.g. the prior run's destination, far off-route) until /initialpose
+                # re-localizes it. InRouteTest is terminal — a single off-route sample freezes it at
+                # FAILURE forever (RouteCompletion survives because it's non-terminal) — so we gate
+                # all criteria ticking until the ego is within arm radius of the route start. Once
+                # armed it stays armed for the rest of the run.
+                if self._criteria_nodes:
+                    if not self._criteria_armed:
+                        self._criteria_armed = self._ego_at_route_start()
+                        if self._criteria_armed:
+                            # Confirm the ego's data-provider speed at arm time: a stale ~0 here
+                            # (while the ego is moving) is the CollisionTest "< EPSILON" skip cause.
+                            try:
+                                _ego = self._scenario.ego_vehicles[0] if (
+                                    self._scenario and self._scenario.ego_vehicles) else None
+                                _spd = CarlaDataProvider.get_velocity(_ego) if _ego else float("nan")
+                                self._diag(f"criteria armed; ego CDP speed={_spd:.2f} m/s")
+                            except Exception:
+                                pass
+                    if self._criteria_armed:
+                        for _criterion in self._criteria_nodes:
+                            try:
+                                _criterion.tick_once()
+                            except Exception:
+                                pass
 
                 if self._scenario:
                     # Check ego arrival to terminate early when a destination exists
@@ -5772,15 +6528,15 @@ class MiniRunner:
                             pass
                         last_dist_log = now
                     if arrived:
-                        if self.wait_for_ego:
-                            # External ego: require 1s stable arrival
+                        if self.wait_for_ego and self._external_ego_arrival_dwell_s > 0.0:
+                            # External ego: require a brief stable-arrival dwell (tunable; default 0)
                             if self._ego_arrival_mark is None:
                                 self._ego_arrival_mark = now
-                            if now - (self._ego_arrival_mark or now) >= 2.0:
+                            if now - (self._ego_arrival_mark or now) >= self._external_ego_arrival_dwell_s:
                                 reason = "ego arrived"
                                 break
                         else:
-                            # Local agent: no extra dwell time once within radius
+                            # Local agent (or dwell disabled): end as soon as within radius
                             reason = "ego arrived"
                             break
                     else:
@@ -5861,6 +6617,12 @@ class MiniRunner:
             _write_fallback(f"Scenario finished ({reason})\n(No ego criteria)\n")
             return
 
+        # Drive the criteria to a terminal status before reading them. The runner loop breaks on
+        # ego arrival without ticking the scenario tree to completion, so py_trees never calls
+        # terminate() on the criteria and they stay at their birth value "INIT". See
+        # docs/vse_technical_notes.md ("Criteria finalization & result label").
+        self._finalize_ego_criteria(ego_criteria, reason)
+
         result_label = self._resolve_result_label(reason, ego_criteria)
         duration_system = max(0.0, end_system_time - start_system_time)
         try:
@@ -5893,6 +6655,38 @@ class MiniRunner:
     def _normalize_reason(reason: Optional[str]) -> str:
         return reason.lower().strip() if reason else ""
 
+    def _finalize_ego_criteria(self, ego_criteria: List[Criterion], reason: str) -> None:
+        """Bring ego criteria to a terminal status before the result table is read.
+
+        The runner loop breaks as soon as the ego arrives (or on timeout/stop) without ticking the
+        scenario tree to a terminal state, so py_trees never calls terminate() on the criteria and
+        they remain at their birth value "INIT". We finalize them here, mirroring what
+        scenario_tree.stop() would do at clean teardown:
+
+        - On ego arrival, credit RouteCompletionTest as complete (100% / SUCCESS). Autoware Mini
+          stops a few metres short of the final waypoint, so the >99% gate never trips even though
+          the ego reached the destination (within the arrival radius). See
+          docs/vse_technical_notes.md.
+        - Then terminate() every ego criterion: the base Criterion.terminate flips remaining
+          INIT/RUNNING criteria (the no-violation detectors) to SUCCESS; criteria that already
+          failed stay FAILURE, and RouteCompletionTest (if not credited above, i.e. the ego did not
+          arrive) correctly becomes FAILURE.
+        """
+        arrived = self._normalize_reason(reason) == "ego arrived"
+        for criterion in ego_criteria:
+            if (
+                arrived
+                and isinstance(criterion, RouteCompletionTest)
+                and criterion.test_status in ("INIT", "RUNNING")
+            ):
+                criterion.actual_value = 100
+                criterion.test_status = "SUCCESS"
+        for criterion in ego_criteria:
+            try:
+                criterion.terminate(py_trees_common.Status.INVALID)
+            except Exception:
+                pass
+
     def _resolve_result_label(self, reason: str, ego_criteria: List[Criterion]) -> str:
         """Determine final result label similar to scenario_runner."""
         label = "SUCCESS"
@@ -5901,7 +6695,9 @@ class MiniRunner:
             label = "TIMEOUT"
         elif normalized.startswith("stopped by user") or normalized.startswith("failed"):
             label = "FAILURE"
-        elif normalized and not normalized.startswith("actors completed"):
+        elif normalized and not (
+            normalized.startswith("actors completed") or normalized.startswith("ego arrived")
+        ):
             label = "FAILURE"
 
         if label != "TIMEOUT":
@@ -5973,7 +6769,6 @@ class MiniRunner:
                         "yaw": start_yaw,
                         "speed_km_h": ego_entry.get("speed_km_h", 0.0),
                         "idle_time_s": 0.0,
-                        "turn_time_s": 0.0,
                         "auto_generated": True,
                         "is_destination": False,
                     },
@@ -6106,6 +6901,8 @@ class MiniRunner:
         self._stop_ros_agent_process()
 
         try:
+            cancel_now = multiprocessing.Event()
+            cancel_done = multiprocessing.Event()
             proc = multiprocessing.Process(
                 target=_ros_plan_publisher_process,
                 args=(
@@ -6114,11 +6911,15 @@ class MiniRunner:
                     self.ros_publish_delay,
                     self.agent_path,
                     self._skip_route_interpolation,
+                    cancel_now,
+                    cancel_done,
                 ),
                 daemon=True,
             )
             proc.start()
             self._ros_agent_proc = proc
+            self._ros_agent_cancel_now = cancel_now
+            self._ros_agent_cancel_done = cancel_done
             self.log(f"Agent subprocess started (pid {proc.pid}) to publish route with {len(raw_waypoints)} points")
         except Exception as exc:
             self.log(f"Failed to launch agent subprocess: {exc}")
@@ -6128,12 +6929,24 @@ class MiniRunner:
         proc = getattr(self, "_ros_agent_proc", None)
         if not proc:
             return
+        cancel_now = getattr(self, "_ros_agent_cancel_now", None)
+        cancel_done = getattr(self, "_ros_agent_cancel_done", None)
         try:
             if proc.is_alive():
+                # Graceful cancel first: ask the agent to cancel the route while it is still
+                # healthy (clean /planning/cancel_route reply, no "returned no response"),
+                # then terminate. Wait briefly for the cancel to complete.
+                if cancel_now is not None:
+                    try:
+                        cancel_now.set()
+                        if cancel_done is not None:
+                            cancel_done.wait(timeout=1.0)
+                    except Exception:
+                        pass
                 # Request graceful termination
                 proc.terminate()
-                # Wait up to 5 seconds for graceful exit
-                proc.join(timeout=5.0)
+                # Wait briefly for graceful exit
+                proc.join(timeout=1.5)
 
                 # If still alive, force kill
                 if proc.is_alive():
@@ -6152,6 +6965,8 @@ class MiniRunner:
                 pass
         finally:
             self._ros_agent_proc = None
+            self._ros_agent_cancel_now = None
+            self._ros_agent_cancel_done = None
 
     def _load_internal_ego_vehicle_data(self) -> Optional[VehicleData]:
         """Build VehicleData for the ego when running without external control."""
@@ -6725,6 +7540,7 @@ class MiniRunner:
                         actor.set_target_velocity(carla.Vector3D())
                         actor.set_target_angular_velocity(carla.Vector3D())
                         try:
+                            _cdp_purge_actor_id(actor.id)
                             CarlaDataProvider.register_actor(actor, spawn_tf)
                         except Exception:
                             pass
@@ -6766,6 +7582,7 @@ class MiniRunner:
                 actor.set_target_velocity(carla.Vector3D())
                 actor.set_target_angular_velocity(carla.Vector3D())
                 try:
+                    _cdp_purge_actor_id(actor.id)
                     CarlaDataProvider.register_actor(actor, spawn_tf)
                 except Exception:
                     pass
@@ -6787,6 +7604,7 @@ class MiniRunner:
             except Exception:
                 pass
             try:
+                _cdp_purge_actor_id(existing.id)
                 CarlaDataProvider.register_actor(existing, spawn_tf)
             except Exception:
                 pass
@@ -6827,6 +7645,7 @@ class MiniRunner:
             return None
 
         try:
+            _cdp_purge_actor_id(actor.id)
             CarlaDataProvider.register_actor(actor, spawn_tf)
         except Exception:
             pass
@@ -6936,9 +7755,54 @@ class MiniRunner:
                 return self.world.get_snapshot()
             # Use a short timeout so stop requests are responsive even if an
             # external tick source stalls.
-            return self.world.wait_for_tick(0.5)
+            try:
+                snap = self.world.wait_for_tick(0.5)
+                if snap is not None:
+                    return snap
+            except Exception:
+                pass
+            # wait_for_tick starved (it can lose the tick stream when MiniRunner runs as a thread
+            # inside the GUI process, which consumes the ticks). The world is still advancing, so
+            # read the current snapshot directly — the run loop de-dups by frame number so this
+            # never double-feeds GameTime.
+            return self.world.get_snapshot()
         except Exception:
             return None
+
+    def _ego_at_route_start(self) -> bool:
+        """True once the ego has been *stably* localized at the criteria route start.
+
+        Gates criteria evaluation (see _run) so the localization transient isn't seen by the terminal
+        InRouteTest: at run start awmini's relay can briefly flicker the ego back to its previous pose
+        (far off-route) even after VSE places it at the start — a single such sample freezes
+        InRouteTest at FAILURE forever. We therefore require the ego to stay within the arm radius
+        (8 m, below InRouteTest's 15 m offroad_min) continuously for an arm dwell before arming; any
+        flicker out of the radius resets the dwell, so arming happens only after the flicker settles.
+        Dwell tunable via $VSE_CRITERIA_ARM_DWELL_S (default 1.0 s).
+        """
+        if self._route_start is None:
+            # No known start (e.g. route unavailable): don't block criteria.
+            return True
+        sc = self._scenario
+        ego = sc.ego_vehicles[0] if (sc and sc.ego_vehicles) else None
+        if ego is None:
+            return False
+        try:
+            dist = ego.get_location().distance(self._route_start)
+        except Exception:
+            return False
+        now = time.monotonic()
+        if dist <= 8.0:
+            if self._route_start_enter_t is None:
+                self._route_start_enter_t = now
+            try:
+                dwell = float(os.environ.get("VSE_CRITERIA_ARM_DWELL_S", "1.0") or 1.0)
+            except Exception:
+                dwell = 1.0
+            return (now - self._route_start_enter_t) >= max(0.0, dwell)
+        # Flicked out of the start radius — reset the stability timer.
+        self._route_start_enter_t = None
+        return False
 
     def _cleanup(self, reason: str):
         with self._cleanup_lock:
@@ -6967,10 +7831,6 @@ class MiniRunner:
         except Exception:
             pass
         try:
-            self._stop_ros_agent_process()
-        except Exception:
-            pass
-        try:
             ego_id = getattr(self, "_spawned_internal_ego_id", None)
             if ego_id is not None:
                 with _temporary_client_timeout(self.client, timeout_s=60.0):
@@ -6993,11 +7853,19 @@ class MiniRunner:
             self._restore_weather = None
             self._restore_sync_settings()
         self.log(f"Scenario ended ({reason or 'finished'})")
+        # Show the results (on_finish opens the result dialog) BEFORE tearing down the ROS agent
+        # subprocess, whose graceful route-cancel + terminate can take a few seconds. This removes
+        # that delay from the user-visible "results appear" time for the external/VIL ego. The local
+        # agent has no such subprocess, so its ordering is unaffected.
         if self.on_finish:
             try:
                 self.on_finish(reason or "finished")
             except Exception:
                 pass
+        try:
+            self._stop_ros_agent_process()
+        except Exception:
+            pass
 
     def _force_all_traffic_lights_green(self) -> int:
         """Force all traffic lights in the world to green (for external ego ignore_traffic_lights).

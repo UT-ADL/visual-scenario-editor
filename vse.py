@@ -84,7 +84,7 @@ import logging
 from collections import deque
 from enum import Enum
 from pathlib import Path
-from typing import Optional, List, Dict, Union, TypedDict, cast, Tuple, Set, Callable, Iterable, Deque
+from typing import Optional, List, Dict, Union, TypedDict, cast, Tuple, Set, Callable, Iterable, Deque, Any
 from dataclasses import dataclass, field
 
 from pygame_gui import UIManager
@@ -107,6 +107,7 @@ from pygame_gui.elements.ui_text_entry_line import UITextEntryLine
 from pygame_gui.elements.ui_label import UILabel
 from pygame_gui.elements.ui_horizontal_slider import UIHorizontalSlider
 from pygame_gui.elements.ui_text_box import UITextBox
+from pygame_gui.elements.ui_scrolling_container import UIScrollingContainer
 
 # Suppress noisy pygame_gui label size warnings while retaining existing layout.
 warnings.filterwarnings(
@@ -370,8 +371,10 @@ INFO_PANEL_BUTTON_TOOLTIPS: Dict[str, str] = {
 
 TOP_UI_BUTTON_TOOLTIPS: Dict[str, str] = {
     'map': "Change Map",
+    'play_camera': "Playback camera: Top-Down, Chase, or Cockpit (also C key during play)",
     'connection': "Switch Connection Mode",
     'resolution': "Change Resolution",
+    'culling': "Cull distance: hide distant meshes beyond N m",
     'fps': "Adjust Frame Rate",
     'manual_tick': "Toggle Drive Clock",
     'scenario': "Scenario Menu",
@@ -494,6 +497,9 @@ class TrafficLightGroupData:
 
 TRAFFIC_LIGHT_FINGERPRINT_SCALE = 4.0  # Quantize to ~0.25m resolution for matching stability
 TRAFFIC_LIGHT_CENTROID_MATCH_THRESHOLD = 2.0  # Max distance (m) to treat centroids as identical
+TRAFFIC_LIGHT_GROUP_YAW_TOLERANCE_DEG = 30.0  # Max heading difference (deg) for lights to share a group
+TRAFFIC_LIGHT_GROUP_ALONG_TRAVEL_CLAMP = 0.5  # Half-extent cap (m) along travel for grouping bboxes
+TRAFFIC_LIGHT_STOP_LINE_MARKER_DEPTH = 1.0  # Drawn stop-line strip depth (m) from the box front edge
 DEFAULT_PERSONAL_TRIGGER_RADIUS = 2.0
 MIN_PERSONAL_TRIGGER_RADIUS = DEFAULT_PERSONAL_TRIGGER_RADIUS
 
@@ -513,17 +519,23 @@ def is_ctrl_pressed(keys=None):
     return keys[pygame.K_LCTRL] or keys[pygame.K_RCTRL]
 
 
-def _has_tile_files_on_disk(short_name: str) -> bool:
-    """Check if a map has _Tile_ .umap files on disk (indicates a large/tiled map)."""
+def _has_tile_files_on_disk(short_name: str, map_folder: str = "") -> bool:
+    """Check if a map has _Tile_ .umap files on disk (indicates a large/tiled map).
+
+    *map_folder*, when provided, restricts the search to that specific
+    subdirectory under ``Maps/`` so that tile files belonging to a
+    *different* map with a similar name are not matched.
+    """
     carla_root = os.environ.get("CARLA_ROOT")
     if not carla_root or not short_name:
         return False
     import glob as _glob
-    pattern = os.path.join(
-        carla_root, "CarlaUE4", "Content", "Carla", "Maps",
-        "**", f"{short_name}_Tile_*.umap",
-    )
-    return bool(_glob.glob(pattern, recursive=True))
+    maps_root = os.path.join(carla_root, "CarlaUE4", "Content", "Carla", "Maps")
+    if map_folder:
+        pattern = os.path.join(maps_root, map_folder, f"{short_name}_Tile_*.umap")
+    else:
+        pattern = os.path.join(maps_root, "**", f"{short_name}_Tile_*.umap")
+    return bool(_glob.glob(pattern, recursive=not map_folder))
 
 
 def is_large_map_name(map_name: Optional[str]) -> bool:
@@ -534,11 +546,13 @@ def is_large_map_name(map_name: Optional[str]) -> bool:
         name = str(map_name or "").lower()
     except Exception:
         return False
-    if "large" in name:
-        return True
     # Check for tile files on disk (catches maps with sublevels like tallinn_demo)
-    short = name.split('/')[-1]
-    if short and _has_tile_files_on_disk(short):
+    parts = name.split('/')
+    short = parts[-1]
+    # Use the parent folder (e.g. "tartu_large_awmini") so we don't match
+    # tile files belonging to a different map with a similar short name.
+    folder = parts[-2] if len(parts) >= 2 else ""
+    if short and _has_tile_files_on_disk(short, map_folder=folder):
         return True
     return False
 
@@ -821,7 +835,7 @@ def cast_ray_with_tile_offset_compensation(
     }
 
 
-def get_ground_height(world, location, debug=False, cached_map=None, *, return_metadata=False, probe_on_miss=True):
+def get_ground_height(world, location, debug=False, cached_map=None, *, return_metadata=False, probe_on_miss=True, exclude_actors=None):
     """
     Get the actual ground height at a location using raycast.
     Tries raycasting first, then falls back to waypoint height, then original Z if all else fails.
@@ -833,6 +847,12 @@ def get_ground_height(world, location, debug=False, cached_map=None, *, return_m
         location: carla.Location to check
         debug: bool - Enable debug logging for coordinate testing (default False)
         probe_on_miss: bool - Whether to probe grid of offsets when raycast misses (default True, can be slow on large maps)
+        exclude_actors: optional iterable of carla.Actor whose bodies must not
+            count as ground — raycast hits inside their bounding cylinders are
+            skipped. Used to keep actor placeholders (pedestrian capsules,
+            vehicle roofs) from being sampled as terrain; labels can't do this
+            because walker capsule hits report NONE, which is also legitimate
+            terrain on custom maps.
     Returns:
         float: Detected ground height (Z coordinate)
     """
@@ -860,6 +880,33 @@ def get_ground_height(world, location, debug=False, cached_map=None, *, return_m
             probe_on_miss=probe_on_miss,
             debug=debug,
         )
+
+        if raycast_result and exclude_actors:
+            zones = []
+            for actor in exclude_actors:
+                try:
+                    if not actor or not actor.is_alive:
+                        continue
+                    actor_location = actor.get_transform().location
+                    bbox = actor.bounding_box
+                    zones.append((
+                        actor_location.x,
+                        actor_location.y,
+                        actor_location.z + bbox.location.z,
+                        math.hypot(bbox.extent.x, bbox.extent.y) + 0.3,
+                        bbox.extent.z + 0.5,
+                    ))
+                except Exception:
+                    continue
+            if zones:
+                raycast_result = [
+                    h for h in raycast_result
+                    if not any(
+                        math.hypot(h.location.x - zx, h.location.y - zy) <= zr
+                        and abs(h.location.z - zz) <= zh
+                        for zx, zy, zz, zr, zh in zones
+                    )
+                ]
 
         if raycast_result:
             # Found ground, use that height directly
@@ -922,6 +969,62 @@ def get_ground_height(world, location, debug=False, cached_map=None, *, return_m
         result = {'height': fallback_height, 'source': 'fallback'}
         return result if return_metadata else fallback_height
 
+
+# Ground clearance for editor placeholders. Vehicle transforms sit near the
+# chassis bottom; a walker transform is body-center (~bbox half-height above its
+# feet), so walkers add their bounding box. Physics settles actors onto the
+# ground when playback starts; the clearance only keeps them from clipping
+# uneven terrain in the editor — and, crucially, keeps the SAVED Z high enough
+# that the post-Play restore (which respawns via try_spawn_actor) doesn't get
+# rejected for overlapping curb/sidewalk geometry.
+VEHICLE_PLACEMENT_CLEARANCE_M = 0.20
+PEDESTRIAN_PLACEMENT_CLEARANCE_M = 0.10
+
+
+def spawn_vehicle_grounded(world, blueprint, x, y, rotation, ground_z,
+                           *, start_buffer=VEHICLE_PLACEMENT_CLEARANCE_M,
+                           step=0.05, max_buffer=2.0):
+    """try_spawn_actor a (non-walker) actor at the lowest collision-free height.
+
+    Escalates Z from ground+start_buffer upward until try_spawn_actor accepts it,
+    so the actor is placed as low as the geometry allows while guaranteeing the
+    saved Z is one CARLA will accept again on restore. Returns (actor, z) or
+    (None, None) if no height up to ground+max_buffer works.
+    """
+    buf = start_buffer
+    while buf <= max_buffer + 1e-6:
+        z = ground_z + buf
+        actor = world.try_spawn_actor(
+            blueprint, carla.Transform(carla.Location(x, y, z), rotation)
+        )
+        if actor is not None:
+            return actor, z
+        buf = round(buf + step, 3)
+    return None, None
+
+
+def lowest_spawnable_z(world, blueprint, x, y, rotation, ground_z,
+                       *, start_buffer=VEHICLE_PLACEMENT_CLEARANCE_M,
+                       step=0.05, max_buffer=2.0):
+    """Lowest Z (>= ground+start_buffer) where try_spawn_actor would succeed.
+
+    Probes with a throwaway actor and returns the validated Z, for repositioning
+    an existing actor (drag-release) to a height that survives restore. Falls
+    back to ground+start_buffer if nothing up to ground+max_buffer works.
+    """
+    actor, z = spawn_vehicle_grounded(
+        world, blueprint, x, y, rotation, ground_z,
+        start_buffer=start_buffer, step=step, max_buffer=max_buffer,
+    )
+    if actor is not None:
+        try:
+            actor.destroy()
+        except Exception:
+            pass
+        return z
+    return ground_z + start_buffer
+
+
 ############################################################
 # Data Models & Clone Helpers
 ############################################################
@@ -937,7 +1040,6 @@ class WaypointDataRequired(TypedDict):
     snapped: bool
     speed_km_h: float
     idle_time_s: float
-    turn_time_s: float
     is_destination: bool
 
 
@@ -2082,23 +2184,24 @@ class SpawnVehicleCommand(Command):
     def execute(self):
         # Adjust spawn location to proper ground height
         adjusted_transform = carla.Transform(self.transform.location, self.transform.rotation)
-        # Add 0.1m offset above ground to avoid bounding box collision
-        # Use debug flag from camera_processor if available
         debug_mode = getattr(self.camera_processor, 'debug_raycast', False)
         cached_map = self.camera_processor._get_cached_map(refresh=False)
-        adjusted_transform.location.z = get_ground_height(
-            self.camera_processor.world,
+        world = self.camera_processor.world
+        ground_z = get_ground_height(
+            world,
             self.transform.location,
             debug=debug_mode,
             cached_map=cached_map,
-        ) + 0.2
+            exclude_actors=self.camera_processor.spawned_vehicles,
+        )
 
         # Spawn the vehicle using CARLA API
-        blueprint_library = self.camera_processor.world.get_blueprint_library()
+        blueprint_library = world.get_blueprint_library()
         vehicle_bp = blueprint_library.find(self.vehicle_type)
 
+        is_walker = self.vehicle_type.startswith('walker.')
         # Apply random color to vehicle (not pedestrians)
-        if not self.vehicle_type.startswith('walker.'):
+        if not is_walker:
             if vehicle_bp.has_attribute('color'):
                 color_attr = vehicle_bp.get_attribute('color')
                 if color_attr.recommended_values:
@@ -2108,7 +2211,33 @@ class SpawnVehicleCommand(Command):
                     if not hasattr(self, 'assigned_color'):
                         self.assigned_color = color
 
-        self.spawned_vehicle = self.camera_processor.world.try_spawn_actor(vehicle_bp, adjusted_transform)
+        x = self.transform.location.x
+        y = self.transform.location.y
+        rotation = self.transform.rotation
+        if is_walker:
+            # bbox is unknown until spawned: spawn clear of the ground, then drop
+            # to ground + bbox half-height + pedestrian clearance (transform is
+            # body-center anchored).
+            self.spawned_vehicle = world.try_spawn_actor(
+                vehicle_bp, carla.Transform(carla.Location(x, y, ground_z + 1.5), rotation)
+            )
+            if self.spawned_vehicle:
+                try:
+                    bbox_z = float(getattr(self.spawned_vehicle.bounding_box.extent, "z", 1.0))
+                except Exception:
+                    bbox_z = 1.0
+                adjusted_transform.location.z = ground_z + bbox_z + PEDESTRIAN_PLACEMENT_CLEARANCE_M
+                self.spawned_vehicle.set_transform(
+                    carla.Transform(carla.Location(x, y, adjusted_transform.location.z), rotation)
+                )
+        else:
+            # Spawn at the lowest collision-free height so the saved Z survives
+            # the post-Play restore (which respawns via try_spawn_actor).
+            self.spawned_vehicle, veh_z = spawn_vehicle_grounded(
+                world, vehicle_bp, x, y, rotation, ground_z
+            )
+            if self.spawned_vehicle and veh_z is not None:
+                adjusted_transform.location.z = veh_z
 
         if self.spawned_vehicle:
             # Disable physics for scenario editing
@@ -2123,7 +2252,6 @@ class SpawnVehicleCommand(Command):
                 speed=default_speed,
                 destination_speed=None,
                 idle_time=0.0,
-                turn_time=0.0,
                 color=color,
                 ignore_flags=None,
                 max_lat_acc=3.0,
@@ -2168,22 +2296,46 @@ class SpawnVehicleCommand(Command):
         adjusted_transform = carla.Transform(self.transform.location, self.transform.rotation)
         debug_mode = getattr(self.camera_processor, 'debug_raycast', False)
         cached_map = self.camera_processor._get_cached_map(refresh=False)
-        adjusted_transform.location.z = get_ground_height(
-            self.camera_processor.world,
+        world = self.camera_processor.world
+        ground_z = get_ground_height(
+            world,
             self.transform.location,
             debug=debug_mode,
             cached_map=cached_map,
-        ) + 0.2
+            exclude_actors=self.camera_processor.spawned_vehicles,
+        )
 
-        blueprint_library = self.camera_processor.world.get_blueprint_library()
+        blueprint_library = world.get_blueprint_library()
         vehicle_bp = blueprint_library.find(self.vehicle_type)
 
+        is_walker = self.vehicle_type.startswith('walker.')
         # Apply the same color that was assigned during execute
-        if not self.vehicle_type.startswith('walker.') and hasattr(self, 'assigned_color'):
+        if not is_walker and hasattr(self, 'assigned_color'):
             if vehicle_bp.has_attribute('color'):
                 vehicle_bp.set_attribute('color', self.assigned_color)
 
-        self.spawned_vehicle = self.camera_processor.world.try_spawn_actor(vehicle_bp, adjusted_transform)
+        x = self.transform.location.x
+        y = self.transform.location.y
+        rotation = self.transform.rotation
+        if is_walker:
+            self.spawned_vehicle = world.try_spawn_actor(
+                vehicle_bp, carla.Transform(carla.Location(x, y, ground_z + 1.5), rotation)
+            )
+            if self.spawned_vehicle:
+                try:
+                    bbox_z = float(getattr(self.spawned_vehicle.bounding_box.extent, "z", 1.0))
+                except Exception:
+                    bbox_z = 1.0
+                adjusted_transform.location.z = ground_z + bbox_z + PEDESTRIAN_PLACEMENT_CLEARANCE_M
+                self.spawned_vehicle.set_transform(
+                    carla.Transform(carla.Location(x, y, adjusted_transform.location.z), rotation)
+                )
+        else:
+            self.spawned_vehicle, veh_z = spawn_vehicle_grounded(
+                world, vehicle_bp, x, y, rotation, ground_z
+            )
+            if self.spawned_vehicle and veh_z is not None:
+                adjusted_transform.location.z = veh_z
 
         if self.spawned_vehicle:
             self.spawned_vehicle.set_simulate_physics(False)
@@ -2197,7 +2349,6 @@ class SpawnVehicleCommand(Command):
                 speed=default_speed,
                 destination_speed=None,
                 idle_time=0.0,
-                turn_time=0.0,
                 color=color,
                 ignore_flags=None,
                 max_lat_acc=3.0,
@@ -2243,7 +2394,6 @@ class DeleteVehicleCommand(Command):
         self.speed = speed
         self.vehicle_id = vehicle.id if vehicle else None
         self.idle_time = camera_processor.get_actor_idle_time(vehicle.id, 0.0) if vehicle else 0.0
-        self.turn_time = camera_processor.get_actor_turn_time(vehicle.id, 0.0) if vehicle else 0.0
         self.destination_speed = camera_processor.get_vehicle_destination_speed(vehicle.id) if vehicle else None
         self.color = camera_processor.get_vehicle_color(vehicle.id) if vehicle else None
         self.ignore_flags = camera_processor.get_vehicle_ignore_flags(vehicle.id) if vehicle else ensure_ignore_flags(None)
@@ -2274,7 +2424,6 @@ class DeleteVehicleCommand(Command):
             # Capture latest metadata before removal
             self.speed = self.camera_processor.get_vehicle_speed(self.vehicle.id, self.speed)
             self.idle_time = self.camera_processor.get_actor_idle_time(self.vehicle.id, self.idle_time)
-            self.turn_time = self.camera_processor.get_actor_turn_time(self.vehicle.id, self.turn_time)
             self.destination_speed = self.camera_processor.get_vehicle_destination_speed(self.vehicle.id)
             self.color = self.camera_processor.get_vehicle_color(self.vehicle.id)
             self.ignore_flags = self.camera_processor.get_vehicle_ignore_flags(self.vehicle.id)
@@ -2309,16 +2458,40 @@ class DeleteVehicleCommand(Command):
         adjusted_transform = carla.Transform(self.transform.location, self.transform.rotation)
         debug_mode = getattr(self.camera_processor, 'debug_raycast', False)
         cached_map = getattr(self.camera_processor, 'cached_map', None)
-        adjusted_transform.location.z = get_ground_height(
-            self.camera_processor.world,
+        world = self.camera_processor.world
+        ground_z = get_ground_height(
+            world,
             self.transform.location,
             debug=debug_mode,
             cached_map=cached_map,
-        ) + 0.2
-        
-        blueprint_library = self.camera_processor.world.get_blueprint_library()
+            exclude_actors=self.camera_processor.spawned_vehicles,
+        )
+
+        blueprint_library = world.get_blueprint_library()
         vehicle_bp = blueprint_library.find(self.vehicle_type)
-        self.vehicle = self.camera_processor.world.try_spawn_actor(vehicle_bp, adjusted_transform)
+
+        x = self.transform.location.x
+        y = self.transform.location.y
+        rotation = self.transform.rotation
+        if self.vehicle_type.startswith('walker.'):
+            self.vehicle = world.try_spawn_actor(
+                vehicle_bp, carla.Transform(carla.Location(x, y, ground_z + 1.5), rotation)
+            )
+            if self.vehicle:
+                try:
+                    bbox_z = float(getattr(self.vehicle.bounding_box.extent, "z", 1.0))
+                except Exception:
+                    bbox_z = 1.0
+                adjusted_transform.location.z = ground_z + bbox_z + PEDESTRIAN_PLACEMENT_CLEARANCE_M
+                self.vehicle.set_transform(
+                    carla.Transform(carla.Location(x, y, adjusted_transform.location.z), rotation)
+                )
+        else:
+            self.vehicle, veh_z = spawn_vehicle_grounded(
+                world, vehicle_bp, x, y, rotation, ground_z
+            )
+            if self.vehicle and veh_z is not None:
+                adjusted_transform.location.z = veh_z
 
         if self.vehicle:
             self.vehicle.set_simulate_physics(False)
@@ -2329,7 +2502,6 @@ class DeleteVehicleCommand(Command):
                 speed=self.speed,
                 destination_speed=self.destination_speed,
                 idle_time=self.idle_time,
-                turn_time=self.turn_time,
                 color=self.color,
                 ignore_flags=self.ignore_flags,
             )
@@ -2606,6 +2778,9 @@ class MoveVehicleCommand(Command):
             self.camera_processor.vehicle_transforms[vehicle.id] = carla.Transform(
                 self.new_transform.location, self.new_transform.rotation
             )
+            # Pedestrians always face their first waypoint; re-derive heading after the move
+            # (no-op for vehicles and for pedestrians without waypoints).
+            self.camera_processor._adjust_pedestrian_spawn_orientation(vehicle.id)
             if self.camera_processor.is_ego_vehicle(vehicle.id):
                 self.camera_processor.update_editor_ego_transform(self.new_transform)
             if vehicle is self.camera_processor.selected_vehicle:
@@ -2619,6 +2794,8 @@ class MoveVehicleCommand(Command):
             self.camera_processor.vehicle_transforms[vehicle.id] = carla.Transform(
                 self.old_transform.location, self.old_transform.rotation
             )
+            # Re-derive pedestrian heading at the restored position (no-op for vehicles).
+            self.camera_processor._adjust_pedestrian_spawn_orientation(vehicle.id)
             if self.camera_processor.is_ego_vehicle(vehicle.id):
                 self.camera_processor.update_editor_ego_transform(self.old_transform)
             if vehicle is self.camera_processor.selected_vehicle:
@@ -2632,6 +2809,8 @@ class MoveVehicleCommand(Command):
             self.camera_processor.vehicle_transforms[vehicle.id] = carla.Transform(
                 self.new_transform.location, self.new_transform.rotation
             )
+            # Re-derive pedestrian heading at the restored position (no-op for vehicles).
+            self.camera_processor._adjust_pedestrian_spawn_orientation(vehicle.id)
             if self.camera_processor.is_ego_vehicle(vehicle.id):
                 self.camera_processor.update_editor_ego_transform(self.new_transform)
             if vehicle is self.camera_processor.selected_vehicle:
@@ -2678,9 +2857,7 @@ class UpdateWaypointPropertyCommand(WaypointCommandMixin, Command):
                 self.camera_processor.editor.info_panel.fields['speed_deviation_km_h'] = f"{waypoint.get('speed_deviation_km_h', 0):.0f}"
             if 'idle_time_s' in self.camera_processor.editor.info_panel.fields:
                 self.camera_processor.editor.info_panel.fields['idle_time_s'] = f"{waypoint.get('idle_time_s', 0.0):.1f}"
-            if 'turn_time_s' in self.camera_processor.editor.info_panel.fields:
-                self.camera_processor.editor.info_panel.fields['turn_time_s'] = f"{waypoint.get('turn_time_s', 0.0):.1f}"
-            
+
             # Update snapped status based on current waypoint state
             snap_status = "Snapped" if waypoint.get('snapped', False) else "Normal"
             self.camera_processor.editor.info_panel.fields['snap_status'] = snap_status
@@ -2780,24 +2957,14 @@ class UpdateVehiclePropertyCommand(Command):
             if vehicle and self.camera_processor.editor.info_panel.selected_object == vehicle:
                 # Refresh the fields to show current values
                 idle = self.camera_processor.get_actor_idle_time(vehicle.id, 0.0)
-                turn = self.camera_processor.get_actor_turn_time(vehicle.id, 0.0)
 
                 if self.property_name == 'speed_km_h':
                     self.camera_processor.editor.info_panel.fields['speed_km_h'] = str(int(self.new_value))
                     if 'idle_time_s' in self.camera_processor.editor.info_panel.fields:
                         self.camera_processor.editor.info_panel.fields['idle_time_s'] = f"{idle:.1f}"
-                    if 'turn_time_s' in self.camera_processor.editor.info_panel.fields:
-                        self.camera_processor.editor.info_panel.fields['turn_time_s'] = f"{turn:.1f}"
                 elif self.property_name == 'idle_time_s':
                     if 'idle_time_s' in self.camera_processor.editor.info_panel.fields:
                         self.camera_processor.editor.info_panel.fields['idle_time_s'] = f"{self.new_value:.1f}"
-                    if 'turn_time_s' in self.camera_processor.editor.info_panel.fields:
-                        self.camera_processor.editor.info_panel.fields['turn_time_s'] = f"{turn:.1f}"
-                elif self.property_name == 'turn_time_s':
-                    if 'turn_time_s' in self.camera_processor.editor.info_panel.fields:
-                        self.camera_processor.editor.info_panel.fields['turn_time_s'] = f"{self.new_value:.1f}"
-                    if 'idle_time_s' in self.camera_processor.editor.info_panel.fields:
-                        self.camera_processor.editor.info_panel.fields['idle_time_s'] = f"{idle:.1f}"
                 elif self.property_name == 'max_lat_acc':
                     if 'max_lat_acc' in self.camera_processor.editor.info_panel.fields:
                         self.camera_processor.editor.info_panel.fields['max_lat_acc'] = f"{self.new_value:.2f}"
@@ -2810,8 +2977,6 @@ class UpdateVehiclePropertyCommand(Command):
                     self.camera_processor.editor.info_panel.fields['yaw'] = f"{transform.rotation.yaw:.2f}"
                     if 'idle_time_s' in self.camera_processor.editor.info_panel.fields:
                         self.camera_processor.editor.info_panel.fields['idle_time_s'] = f"{idle:.1f}"
-                    if 'turn_time_s' in self.camera_processor.editor.info_panel.fields:
-                        self.camera_processor.editor.info_panel.fields['turn_time_s'] = f"{turn:.1f}"
 
     def execute(self):
         # Update vehicle property
@@ -2821,8 +2986,6 @@ class UpdateVehiclePropertyCommand(Command):
                 self.camera_processor.set_vehicle_speed(vehicle.id, self.new_value)
             elif self.property_name == 'idle_time_s':
                 self.camera_processor.set_actor_idle_time(vehicle.id, self.new_value)
-            elif self.property_name == 'turn_time_s':
-                self.camera_processor.set_actor_turn_time(vehicle.id, self.new_value)
             elif self.property_name == 'max_lat_acc':
                 self.camera_processor.set_vehicle_max_lat_acc(vehicle.id, self.new_value)
             elif self.new_transform:
@@ -2830,6 +2993,9 @@ class UpdateVehiclePropertyCommand(Command):
                 self.camera_processor.vehicle_transforms[vehicle.id] = carla.Transform(
                     self.new_transform.location, self.new_transform.rotation
                 )
+                # Pedestrians always face their first waypoint after a position edit
+                # (no-op for vehicles and for pedestrians without waypoints).
+                self.camera_processor._adjust_pedestrian_spawn_orientation(vehicle.id)
                 if self.camera_processor.is_ego_vehicle(vehicle.id):
                     self.camera_processor.update_editor_ego_transform(self.new_transform)
                 if vehicle is self.camera_processor.selected_vehicle:
@@ -2844,8 +3010,6 @@ class UpdateVehiclePropertyCommand(Command):
                 self.camera_processor.set_vehicle_speed(vehicle.id, self.old_value)
             elif self.property_name == 'idle_time_s':
                 self.camera_processor.set_actor_idle_time(vehicle.id, self.old_value)
-            elif self.property_name == 'turn_time_s':
-                self.camera_processor.set_actor_turn_time(vehicle.id, self.old_value)
             elif self.property_name == 'max_lat_acc':
                 self.camera_processor.set_vehicle_max_lat_acc(vehicle.id, self.old_value)
             elif self.old_transform:
@@ -2853,6 +3017,8 @@ class UpdateVehiclePropertyCommand(Command):
                 self.camera_processor.vehicle_transforms[vehicle.id] = carla.Transform(
                     self.old_transform.location, self.old_transform.rotation
                 )
+                # Re-derive pedestrian heading at the restored position (no-op for vehicles).
+                self.camera_processor._adjust_pedestrian_spawn_orientation(vehicle.id)
                 if self.camera_processor.is_ego_vehicle(vehicle.id):
                     self.camera_processor.update_editor_ego_transform(self.old_transform)
                 if vehicle is self.camera_processor.selected_vehicle:
@@ -2870,21 +3036,9 @@ class UpdateVehiclePropertyCommand(Command):
                     if 'idle_time_s' in self.camera_processor.editor.info_panel.fields:
                         idle = self.camera_processor.get_actor_idle_time(vehicle.id, 0.0)
                         self.camera_processor.editor.info_panel.fields['idle_time_s'] = f"{idle:.1f}"
-                    if 'turn_time_s' in self.camera_processor.editor.info_panel.fields:
-                        turn = self.camera_processor.get_actor_turn_time(vehicle.id, 0.0)
-                        self.camera_processor.editor.info_panel.fields['turn_time_s'] = f"{turn:.1f}"
                 elif self.property_name == 'idle_time_s':
                     if 'idle_time_s' in self.camera_processor.editor.info_panel.fields:
                         self.camera_processor.editor.info_panel.fields['idle_time_s'] = f"{self.old_value:.1f}"
-                    if 'turn_time_s' in self.camera_processor.editor.info_panel.fields:
-                        turn = self.camera_processor.get_actor_turn_time(vehicle.id, 0.0)
-                        self.camera_processor.editor.info_panel.fields['turn_time_s'] = f"{turn:.1f}"
-                elif self.property_name == 'turn_time_s':
-                    if 'turn_time_s' in self.camera_processor.editor.info_panel.fields:
-                        self.camera_processor.editor.info_panel.fields['turn_time_s'] = f"{self.old_value:.1f}"
-                    if 'idle_time_s' in self.camera_processor.editor.info_panel.fields:
-                        idle = self.camera_processor.get_actor_idle_time(vehicle.id, 0.0)
-                        self.camera_processor.editor.info_panel.fields['idle_time_s'] = f"{idle:.1f}"
                 elif self.property_name == 'max_lat_acc':
                     if 'max_lat_acc' in self.camera_processor.editor.info_panel.fields:
                         self.camera_processor.editor.info_panel.fields['max_lat_acc'] = f"{self.old_value:.2f}"
@@ -2897,9 +3051,6 @@ class UpdateVehiclePropertyCommand(Command):
                     if 'idle_time_s' in self.camera_processor.editor.info_panel.fields:
                         idle = self.camera_processor.get_actor_idle_time(vehicle.id, 0.0)
                         self.camera_processor.editor.info_panel.fields['idle_time_s'] = f"{idle:.1f}"
-                    if 'turn_time_s' in self.camera_processor.editor.info_panel.fields:
-                        turn = self.camera_processor.get_actor_turn_time(vehicle.id, 0.0)
-                        self.camera_processor.editor.info_panel.fields['turn_time_s'] = f"{turn:.1f}"
     
     def redo(self):
         # Re-execute the update
@@ -3983,6 +4134,7 @@ class CarlaServerManager:
             self.carla_path = carla_path
         self.port = port
         self.process = None
+        self._server_log_handle = None
         self.use_existing_server = False
         self.allow_auto_stop = True
         self._atexit_registered = False
@@ -4155,16 +4307,36 @@ class CarlaServerManager:
             self.carla_path,
             "-RenderOffScreen",
             "-prefernvidia",
+            "-ResX=1",
+            "-ResY=1"
         ]
         
         print(f"Command: {' '.join(cmd)}")
-        
+
+        # Capture the server's stdout/stderr to a log file so UE4 messages and any crash
+        # (e.g. "Signal 11 Segmentation fault") are recoverable for debugging. Truncated each
+        # launch. Override the path with VSE_CARLA_SERVER_LOG. The crashinfo dir under
+        # ~/.config/Epic/CarlaUE4/Saved/Crashes/ is named with the same PID printed below, so the
+        # log, the crash dump, and the VSE-side log can all be correlated by that PID.
+        server_log_path = os.environ.get("VSE_CARLA_SERVER_LOG", "/tmp/carla_server.log")
+        try:
+            self._server_log_handle = open(server_log_path, "w")
+            server_stdout = self._server_log_handle
+            server_stderr = subprocess.STDOUT  # fold stderr into the same log
+            print(f"CARLA server log: {server_log_path}")
+        except OSError as log_err:
+            print(f"Warning: could not open server log '{server_log_path}' ({log_err}); "
+                  "discarding server output.")
+            self._server_log_handle = None
+            server_stdout = subprocess.DEVNULL
+            server_stderr = subprocess.DEVNULL
+
         try:
             # Start without trying to monitor output to avoid interference
             self.process = subprocess.Popen(
                 cmd,
-                stdout=subprocess.DEVNULL,  # Don't capture output
-                stderr=subprocess.DEVNULL,  # Don't capture stderr
+                stdout=server_stdout,
+                stderr=server_stderr,
                 preexec_fn=os.setsid  # Create new process group
             )
         except Exception as e:
@@ -4307,6 +4479,12 @@ class CarlaServerManager:
             self.known_server_pid = None
             self.use_existing_server = False
             self.allow_auto_stop = True
+            if self._server_log_handle is not None:
+                try:
+                    self._server_log_handle.close()
+                except OSError:
+                    pass
+                self._server_log_handle = None
             print("CARLA server stopped")
         else:
             if self.use_existing_server:
@@ -4486,7 +4664,7 @@ class CameraImageProcessor:
         self.destination_marker_coordinates = None
         self.vehicle_menu_position = None  # Hide menu while placing destination
 
-        print("Destination placement mode: Move the mouse and left-click to choose a destination for auto-routing.")
+        print("Destination placement mode: Move the mouse and left-click to choose a destination for auto-routing. ESC or right-click to cancel.")
     """
     Manages the CARLA camera sensor, image acquisition, vehicle and waypoint management, and overlay rendering.
     Central logic for scenario editing, visualization, and interaction with CARLA world objects.
@@ -4583,6 +4761,10 @@ class CameraImageProcessor:
         self.ego_vehicle_color = None
         self.manual_control_enabled = False
         self.manual_control_pending = False
+        # Per-run latch: True for the whole local-ego manual run regardless of attach state.
+        # Arrow-key routing gates on this (not the transient enabled/pending pair) so arrows
+        # never leak to the camera while the ego is spawning or recovering from a transient drop.
+        self.manual_control_armed = False
         self.manual_control_actor = None
         self.manual_control_state = {
             'control': None,
@@ -4609,6 +4791,40 @@ class CameraImageProcessor:
         self._playback_camera_follow_search_timer = 0.0
         self._playback_camera_follow_local_offset = (0.0, 0.0, 0.0)
         self._playback_camera_target_transform: Optional[carla.Transform] = None
+        # External-ego (VIL) camera-follow smoothing: ease the top-down camera toward the ego
+        # instead of snapping each tick, so async ego teleports don't make the view shaky.
+        # Exponential time constant in seconds: smaller = snappier (tighter), larger = floatier.
+        # 0 = no smoothing (snap to the ego each frame).
+        self._playback_camera_follow_tau = 0
+        # Predictive lead (seconds): aim ahead by the ego's estimated velocity to cancel the
+        # camera's one-tick set_transform lag, tightening the lock without the snap wobble.
+        # 0 = no prediction. Try ~0.05-0.15 (optionally with a small tau).
+        self._playback_camera_follow_lead = 0
+        # Internal predictive-follow state (ego velocity estimated from observed target motion;
+        # finite-difference, because get_velocity() can read 0 for a physics-off teleported ego).
+        self._playback_camera_follow_vel = (0.0, 0.0)
+        self._playback_camera_follow_prev_target: Optional[Tuple[float, float]] = None
+        self._playback_camera_follow_prev_t = 0.0
+        # Playback camera mode, cycled by C during a run: "topdown" (overhead, editor default),
+        # "chase" (behind the vehicle, like awmini's spectator), or "cockpit" (driver-seat view,
+        # rigid-attached to the ego). Chase params match awmini's carla.yaml spectator defaults;
+        # tunable like tau/lead.
+        self.playback_camera_mode = "topdown"
+        self.chase_distance_behind = 8.0   # m behind the ego
+        self.chase_height_above = 5.0      # m above the ego
+        self.chase_pitch = 15            # degrees downward tilt
+        # Cockpit (driver-seat) offset in the ego's own frame, looking forward. Matches the cockpit
+        # presets in manual_control_steeringwheel.py / drive_racing.py (tuned for the Lexus ego).
+        self.cockpit_x = 0.1    # m forward of the vehicle origin
+        self.cockpit_y = -0.5   # m to the (left) driver seat
+        self.cockpit_z = 1.4    # m up (head height)
+        self.cockpit_pitch = 0.0  # degrees (0 = look straight ahead)
+        # True while VSE's camera is rigid-attached to a CARLA actor: the spectator (external-ego
+        # chase -> zero-lag, server-window-identical) or the ego itself (cockpit). While attached the
+        # engine drives the camera, so the follow tick/step/apply are suspended (see
+        # _is_camera_engine_attached). Local-ego chase stays compute-own (not attached).
+        self._camera_attached_to_spectator = False
+        self._camera_attached_to_ego = False
 
         # Weather state (keyframes for saving)
         self._weather_state: Dict[str, float] = {}
@@ -4627,7 +4843,6 @@ class CameraImageProcessor:
         ]
         self._weather_drag_snapshot: Optional[Dict[str, object]] = None
         self.actor_idle_times = {}  # Track idle times for actors (pedestrians)
-        self.actor_turn_times = {}  # Track turn times for actors (pedestrians)
         self.vehicle_ignore_traffic_lights = {}  # Track ignore_traffic_lights by vehicle ID
         self.vehicle_ignore_stop_signs = {}     # Track ignore_stop_signs by vehicle ID
         self.vehicle_ignore_vehicles = {}        # Track ignore_vehicles by vehicle ID
@@ -4832,6 +5047,14 @@ class CameraImageProcessor:
         attachment_type: carla.AttachmentType = carla.AttachmentType.Rigid,
     ):
         """Create and configure the camera sensor"""
+        # Exactly one camera sensor at a time: destroy any existing one before spawning, so swapping
+        # top-down <-> chase never leaves two cameras rendering (which would halve FPS).
+        if self.camera_sensor is not None:
+            try:
+                self.camera_sensor.destroy()
+            except Exception:
+                pass
+            self.camera_sensor = None
         # Get camera blueprint
         blueprint_library = self.world.get_blueprint_library()
         camera_bp = blueprint_library.find('sensor.camera.rgb')
@@ -4907,7 +5130,15 @@ class CameraImageProcessor:
             self._scaled_image_cache = None
             self._scaled_image_frame = None
             self._scaled_image_size = None
-            self.restart_camera_sensor()
+            if self._is_camera_engine_attached():
+                # Re-spawn the new-resolution sensor still attached to its actor (chase ->
+                # spectator, cockpit -> ego) instead of free at the editor pose. Clear the
+                # flags first so _apply_playback_camera_attach re-enters the attach.
+                self._camera_attached_to_spectator = False
+                self._camera_attached_to_ego = False
+                self._apply_playback_camera_attach()
+            else:
+                self.restart_camera_sensor()
         else:
             self.stream_resolution = (int(self.stream_resolution[0]), int(self.stream_resolution[1]))
 
@@ -5259,9 +5490,9 @@ class CameraImageProcessor:
             else:
                 try:
                     self.camera_sensor.set_transform(transform)
-                    if self.world:
-                        spectator = self.world.get_spectator()
-                        spectator.set_transform(transform)
+                    # Spectator intentionally NOT moved on normal maps: the CARLA
+                    # spectator is unhooked from the editor camera and left where
+                    # it is. (Large maps anchor streaming via the queue path above.)
                 except Exception:
                     pass
 
@@ -5646,19 +5877,18 @@ class CameraImageProcessor:
         grouping_meta = []
 
         for light in self.traffic_lights:
+            # Warm the rectangle cache for drawing/hit-testing (full-size box)
             rectangle_data = self._get_traffic_light_rectangle_points(light)
             if not rectangle_data:
                 continue
-            corners, _ = rectangle_data
-            min_x = min(pt.x for pt in corners)
-            max_x = max(pt.x for pt in corners)
-            min_y = min(pt.y for pt in corners)
-            max_y = max(pt.y for pt in corners)
-            min_z = min(pt.z for pt in corners)
-            max_z = max(pt.z for pt in corners)
+            grouping_geometry = self._get_traffic_light_grouping_geometry(light)
+            if not grouping_geometry:
+                continue
+            bbox, yaw = grouping_geometry
             grouping_meta.append({
                 "light": light,
-                "bbox": (min_x, max_x, min_y, max_y, min_z, max_z),
+                "bbox": bbox,
+                "yaw": yaw,
             })
 
         self._build_traffic_light_groups(grouping_meta)
@@ -5684,6 +5914,117 @@ class CameraImageProcessor:
             and max_z1 + tolerance_z >= min_z2
             and max_z2 + tolerance_z >= min_z1
         )
+
+    @staticmethod
+    def _yaws_aligned(
+        yaw1: Optional[float],
+        yaw2: Optional[float],
+        tolerance_deg: float = TRAFFIC_LIGHT_GROUP_YAW_TOLERANCE_DEG,
+    ) -> bool:
+        """Return True when two world yaws differ by no more than tolerance_deg.
+
+        Unknown yaws (None) pass the gate so lights are never dropped from grouping.
+        """
+        if yaw1 is None or yaw2 is None:
+            return True
+        diff = abs(yaw1 - yaw2) % 360.0
+        if diff > 180.0:
+            diff = 360.0 - diff
+        return diff <= tolerance_deg
+
+    @staticmethod
+    def _heading_diff_180(yaw1: float, yaw2: float) -> float:
+        """Smallest angle (deg) between two headings, ignoring direction sign."""
+        diff = abs(yaw1 - yaw2) % 180.0
+        return 180.0 - diff if diff > 90.0 else diff
+
+    @staticmethod
+    def _heading_diff_360(yaw1: float, yaw2: float) -> float:
+        """Smallest angle (deg) between two directions, sign-sensitive (0-180)."""
+        diff = abs(yaw1 - yaw2) % 360.0
+        return 360.0 - diff if diff > 180.0 else diff
+
+    def _get_travel_yaw_at(self, location: carla.Location) -> Optional[float]:
+        """Return the driving-lane heading (deg) at a world location, or None."""
+        cached_map = self._get_cached_map(refresh=False)
+        if cached_map is None:
+            return None
+        try:
+            waypoint = cached_map.get_waypoint(
+                location, project_to_road=True, lane_type=carla.LaneType.Driving
+            )
+            if waypoint:
+                return float(waypoint.transform.rotation.yaw)
+        except Exception:
+            pass
+        return None
+
+    def _get_traffic_light_grouping_geometry(
+        self, traffic_light: carla.TrafficLight
+    ) -> Optional[Tuple[Tuple[float, float, float, float, float, float], Optional[float]]]:
+        """Return (world AABB, world yaw) of the trigger box as used for grouping.
+
+        The half-extent along the travel direction (detected from the road waypoint heading at
+        the trigger center) is clamped to TRAFFIC_LIGHT_GROUP_ALONG_TRAVEL_CLAMP so that long
+        trigger boxes don't bridge consecutive stop lines along the same road. Drawing and
+        hit-testing use the stop-line strip instead (_get_traffic_light_rectangle_points). When
+        the travel axis can't be determined, extents stay unclamped (previous behavior).
+        """
+        trigger_volume = getattr(traffic_light, "trigger_volume", None)
+        if trigger_volume is None:
+            return None
+        try:
+            transform = traffic_light.get_transform()
+            extent = trigger_volume.extent
+        except Exception:
+            return None
+        if extent is None:
+            return None
+
+        trigger_transform = carla.Transform(trigger_volume.location, trigger_volume.rotation)
+
+        yaw: Optional[float] = None
+        try:
+            yaw = float(transform.rotation.yaw) + float(trigger_volume.rotation.yaw)
+        except Exception:
+            yaw = None
+
+        half_x = float(extent.x)
+        half_y = float(extent.y)
+        travel_yaw: Optional[float] = None
+        if yaw is not None:
+            try:
+                center = transform.transform(trigger_transform.transform(carla.Location()))
+                travel_yaw = self._get_travel_yaw_at(center)
+            except Exception:
+                travel_yaw = None
+        if yaw is not None and travel_yaw is not None:
+            if self._heading_diff_180(yaw, travel_yaw) <= self._heading_diff_180(yaw + 90.0, travel_yaw):
+                half_x = min(half_x, TRAFFIC_LIGHT_GROUP_ALONG_TRAVEL_CLAMP)
+            else:
+                half_y = min(half_y, TRAFFIC_LIGHT_GROUP_ALONG_TRAVEL_CLAMP)
+
+        local_corners = [
+            carla.Location(+half_x, +half_y, 0.0),
+            carla.Location(-half_x, +half_y, 0.0),
+            carla.Location(-half_x, -half_y, 0.0),
+            carla.Location(+half_x, -half_y, 0.0),
+        ]
+        world_corners: List[carla.Location] = []
+        for corner in local_corners:
+            try:
+                world_corners.append(transform.transform(trigger_transform.transform(corner)))
+            except Exception:
+                return None
+        bbox = (
+            min(pt.x for pt in world_corners),
+            max(pt.x for pt in world_corners),
+            min(pt.y for pt in world_corners),
+            max(pt.y for pt in world_corners),
+            min(pt.z for pt in world_corners),
+            max(pt.z for pt in world_corners),
+        )
+        return bbox, yaw
 
     @staticmethod
     def _compute_traffic_light_fingerprint(
@@ -5912,6 +6253,17 @@ class CameraImageProcessor:
                         tolerance_xy=tolerance_xy,
                         tolerance_z=tolerance_z,
                     ):
+                        if not self._yaws_aligned(
+                            cast(Optional[float], current.get("yaw")),
+                            cast(Optional[float], other.get("yaw")),
+                        ):
+                            if self._traffic_light_debug_matching:
+                                self._traffic_light_debug(
+                                    f"  Yaw gate rejected merge: light {current_id} "
+                                    f"(yaw={current.get('yaw')}) vs light {other_id} "
+                                    f"(yaw={other.get('yaw')})"
+                                )
+                            continue
                         stack.append(other)
 
             if not group_entries:
@@ -6312,7 +6664,10 @@ class CameraImageProcessor:
 
     def request_manual_control(self) -> None:
         """Begin watching for an ego vehicle to attach for manual control."""
+        self.manual_control_armed = True
         self.manual_control_pending = True
+        # The starting camera mode is assigned by the editor from its remembered Play Cam
+        # preference right after this call; do not force it here.
         self.manual_control_enabled = False
         self.manual_control_actor = None
         self._manual_control_search_timer = 0.0
@@ -6368,6 +6723,7 @@ class CameraImageProcessor:
                     if actor and actor.id == self.ego_vehicle_id:
                         actor_data['transform'] = carla.Transform(final_transform.location, final_transform.rotation)
                         break
+        self.manual_control_armed = False
         self.manual_control_enabled = False
         self.manual_control_pending = False
         self.manual_control_actor = None
@@ -6388,7 +6744,7 @@ class CameraImageProcessor:
 
     def handle_manual_control_key(self, key: int, is_pressed: bool) -> bool:
         """Route arrow-key input to manual control when active. Returns True if the key was consumed."""
-        if not (self.manual_control_enabled or self.manual_control_pending):
+        if not self.manual_control_armed:
             return False
 
         state = self.manual_control_state
@@ -6414,7 +6770,10 @@ class CameraImageProcessor:
         if self.manual_control_enabled:
             actor = self.manual_control_actor
             if not actor or not actor.is_alive:
-                self.disable_manual_control()
+                # The "not alive" read can be a transient false positive (stale proxy). Re-pend
+                # the search instead of tearing down, so manual control re-attaches when the ego
+                # reappears and arrows stay armed (never leaking to the camera mid-run).
+                self.request_manual_control()
                 return
             self._apply_manual_control(dt)
             return
@@ -6449,6 +6808,8 @@ class CameraImageProcessor:
         })
         self._manual_control_start_camera_follow(actor)
         self._manual_control_register_tick_callback()
+        # Attach for the starting camera mode (chase/cockpit) now that the ego exists.
+        self._apply_playback_camera_attach()
         print("Manual ego control enabled. Arrow keys now steer the ego vehicle.")
 
     def _find_manual_control_actor(self) -> Optional[carla.Actor]:
@@ -6664,7 +7025,9 @@ class CameraImageProcessor:
             actor.apply_control(control)
             self.update_editor_ego_transform(actor.get_transform())
         except Exception:
-            self.disable_manual_control()
+            # Transient RPC failure (stale proxy / glitch): re-pend and re-attach rather than
+            # tearing down, keeping arrows armed for the ego instead of releasing them to the camera.
+            self.request_manual_control()
 
     def _manual_control_compute_local_offset(
         self,
@@ -6711,8 +7074,47 @@ class CameraImageProcessor:
         world_rotation = carla.Rotation(pitch=-90.0, yaw=270.0, roll=0.0)
         return carla.Transform(world_location, world_rotation)
 
+    @staticmethod
+    def _build_chase_world_transform(
+        actor_transform: carla.Transform,
+        distance_behind: float,
+        height_above: float,
+        pitch: float,
+    ) -> carla.Transform:
+        """Behind-the-vehicle chase pose (CARLA frame), matching awmini's spectator recipe:
+        sit `distance_behind` m behind the ego along its heading, `height_above` m up, tilted
+        down `pitch` degrees, facing the ego's heading."""
+        loc = actor_transform.location
+        yaw = actor_transform.rotation.yaw
+        yaw_rad = math.radians(yaw)
+        world_location = carla.Location(
+            x=loc.x - distance_behind * math.cos(yaw_rad),
+            y=loc.y - distance_behind * math.sin(yaw_rad),
+            z=loc.z + height_above,
+        )
+        world_rotation = carla.Rotation(pitch=-float(pitch), yaw=yaw, roll=0.0)
+        return carla.Transform(world_location, world_rotation)
+
+    def _build_follow_target(self, actor_transform, local_offset):
+        """Build the follow-camera target for the current playback_camera_mode.
+
+        'topdown' -> overhead (editor default); 'chase' -> behind the vehicle. Every follow path
+        routes through here, so toggling the mode (C) is reflected wherever the target is built.
+        local_offset only applies to topdown; chase uses its own distance/height/pitch.
+        """
+        if self.playback_camera_mode == "chase":
+            return self._build_chase_world_transform(
+                actor_transform,
+                self.chase_distance_behind,
+                self.chase_height_above,
+                self.chase_pitch,
+            )
+        return self._manual_control_build_world_transform(actor_transform, local_offset)
+
     def _manual_control_apply_target_transform(self, *, force: bool = False) -> None:
         """Apply the cached target transform to the controller and sensor."""
+        if self._is_camera_engine_attached():
+            return  # engine drives the camera while attached to the ego (cockpit); don't fight it
         transform = self._manual_control_target_transform
         controller = self.camera_controller
         if transform is None or not controller:
@@ -6727,9 +7129,12 @@ class CameraImageProcessor:
         try:
             if self.camera_sensor:
                 self.camera_sensor.set_transform(transform)
-            if self.world:
-                spectator = self.world.get_spectator()
-                spectator.set_transform(transform)
+            # Move the spectator to track the local ego when culling is on, so the CARLA server window
+            # follows the ego and camera-relative culling renders correctly. The ego (not the spectator)
+            # stays the large-map streaming anchor, so this only repositions the viewport. Gated on the
+            # combined "Cull" option via editor.culling_enabled (off => spectator left alone, as before).
+            if self.world is not None and getattr(self.editor, "culling_enabled", False):
+                self.world.get_spectator().set_transform(transform)
         except Exception:
             pass
         self.camera_is_moving = False
@@ -6755,7 +7160,7 @@ class CameraImageProcessor:
 
         local_offset = self._manual_control_compute_local_offset(actor_transform, controller)
         self.manual_control_state['camera_follow_local_offset'] = local_offset
-        self._manual_control_target_transform = self._manual_control_build_world_transform(actor_transform, local_offset)
+        self._manual_control_target_transform = self._build_follow_target(actor_transform, local_offset)
         self._manual_control_apply_target_transform()
 
     def _manual_control_stop_camera_follow(self) -> None:
@@ -6807,7 +7212,7 @@ class CameraImageProcessor:
                 return False
             local_offset = self._manual_control_compute_local_offset(actor_transform, controller)
             self.manual_control_state['camera_follow_local_offset'] = local_offset
-            self._manual_control_target_transform = self._manual_control_build_world_transform(
+            self._manual_control_target_transform = self._build_follow_target(
                 actor_transform, local_offset
             )
             self._manual_control_apply_target_transform(force=True)
@@ -6825,7 +7230,7 @@ class CameraImageProcessor:
                 return False
             local_offset = self._manual_control_compute_local_offset(actor_transform, controller)
             self._playback_camera_follow_local_offset = local_offset
-            self._playback_camera_target_transform = self._manual_control_build_world_transform(
+            self._playback_camera_target_transform = self._build_follow_target(
                 actor_transform, local_offset
             )
             self._playback_camera_apply_target_transform(force=True)
@@ -6849,7 +7254,7 @@ class CameraImageProcessor:
                 return
             local_offset = self._manual_control_compute_local_offset(actor_transform, controller)
             self.manual_control_state['camera_follow_local_offset'] = local_offset
-            self._manual_control_target_transform = self._manual_control_build_world_transform(actor_transform, local_offset)
+            self._manual_control_target_transform = self._build_follow_target(actor_transform, local_offset)
             self._manual_control_apply_target_transform()
         elif self.playback_camera_follow_enabled:
             actor = self.playback_camera_follow_actor
@@ -6864,7 +7269,7 @@ class CameraImageProcessor:
                 return
             local_offset = self._manual_control_compute_local_offset(actor_transform, controller)
             self._playback_camera_follow_local_offset = local_offset
-            self._playback_camera_target_transform = self._manual_control_build_world_transform(actor_transform, local_offset)
+            self._playback_camera_target_transform = self._build_follow_target(actor_transform, local_offset)
             self._playback_camera_apply_target_transform()
 
     def _process_pending_free_look_restores(self) -> None:
@@ -6926,7 +7331,7 @@ class CameraImageProcessor:
             return
 
         local_offset = self.manual_control_state.get('camera_follow_local_offset', (0.0, 0.0, 0.0))
-        self._manual_control_target_transform = self._manual_control_build_world_transform(actor_transform, local_offset)
+        self._manual_control_target_transform = self._build_follow_target(actor_transform, local_offset)
         self._manual_control_apply_target_transform()
 
     # -------------------------------------------------------------------------
@@ -6936,14 +7341,143 @@ class CameraImageProcessor:
     def request_playback_camera_follow(self) -> None:
         """Begin watching for an ego vehicle to follow during playback (no keyboard control)."""
         self.playback_camera_follow_pending = True
+        # The starting camera mode is assigned by the editor from its remembered Play Cam
+        # preference right after this call; do not force it here.
         self.playback_camera_follow_enabled = False
         self.playback_camera_follow_actor = None
         self._playback_camera_follow_search_timer = 0.0
         self._playback_camera_follow_local_offset = (0.0, 0.0, 0.0)
         self._playback_camera_target_transform = None
 
+    def toggle_playback_camera_mode(self) -> str:
+        """Cycle the playback camera 'topdown' -> 'chase' -> 'cockpit' -> 'topdown'; return new mode.
+
+        topdown : free overhead (editor default).
+        chase   : behind the vehicle. External ego rigid-attaches to the CARLA spectator (zero-lag,
+                  server-window-identical); local ego computes its own chase pose (sync -> smooth).
+        cockpit : driver-seat view, rigid-attached to the ego itself so it turns with the car. Works
+                  for both external (bridge-driven) and local (sync) ego.
+        """
+        order = ("topdown", "chase", "cockpit")
+        idx = order.index(self.playback_camera_mode) if self.playback_camera_mode in order else 0
+        return self.set_playback_camera_mode(order[(idx + 1) % len(order)])
+
+    def set_playback_camera_mode(self, mode: str) -> str:
+        """Set the playback camera mode directly and apply the matching attach; return the mode."""
+        if mode in ("topdown", "chase", "cockpit"):
+            self.playback_camera_mode = mode
+        self._apply_playback_camera_attach()
+        return self.playback_camera_mode
+
+    def _apply_playback_camera_attach(self) -> None:
+        """Attach/detach VSE's camera sensor to match the current playback_camera_mode.
+
+        Leaves the free top-down camera in place for 'topdown'. Detaches any attach that doesn't match
+        the new mode, then enters the new mode's attach (spectator for external-ego chase; ego for
+        cockpit). Local-ego chase is compute-own, so it needs no attach here.
+        """
+        mode = self.playback_camera_mode
+        external = self.playback_camera_follow_enabled
+        # Leave any attach that no longer matches the mode (each detach re-spawns the free camera).
+        if self._camera_attached_to_spectator and mode != "chase":
+            self._detach_camera_from_spectator()
+        if self._camera_attached_to_ego and mode != "cockpit":
+            self._detach_camera_from_ego()
+        # Enter the new mode's attach.
+        if mode == "chase" and external and not self._camera_attached_to_spectator:
+            self._attach_camera_to_spectator()
+        elif mode == "cockpit" and not self._camera_attached_to_ego:
+            actor = self.playback_camera_follow_actor if external else self.manual_control_actor
+            self._attach_camera_to_ego_cockpit(actor)
+
+    def _attach_camera_to_spectator(self) -> None:
+        """Rigid-attach VSE's camera to the CARLA spectator (awmini-driven) -> zero-lag server view.
+        Falls back to the compute-own free-camera chase if no spectator is available."""
+        spectator = None
+        try:
+            spectator = self.world.get_spectator() if self.world else None
+        except Exception:
+            spectator = None
+        if spectator is None:
+            self._camera_attached_to_spectator = False  # fall back to compute-own chase (free cam)
+            return
+        self._camera_attached_to_spectator = True
+        try:
+            self.restart_camera_sensor(
+                attach_to=spectator,
+                transform=carla.Transform(),  # identity offset -> exactly the spectator's view
+                attachment_type=carla.AttachmentType.Rigid,
+            )
+        except Exception as exc:
+            print(f"[Camera] Failed to attach to spectator: {exc}")
+            self._camera_attached_to_spectator = False
+            try:
+                self.restart_camera_sensor(attach_to=None, transform=self.camera_controller.get_carla_transform())
+            except Exception:
+                pass
+
+    def _detach_camera_from_spectator(self) -> None:
+        """Re-spawn the free top-down camera and resume the normal follow."""
+        if not self._camera_attached_to_spectator:
+            return
+        self._camera_attached_to_spectator = False
+        try:
+            self.restart_camera_sensor(attach_to=None, transform=self.camera_controller.get_carla_transform())
+        except Exception as exc:
+            print(f"[Camera] Failed to detach from spectator: {exc}")
+
+    def _attach_camera_to_ego_cockpit(self, actor: Optional[carla.Actor]) -> None:
+        """Rigid-attach VSE's camera to the ego at the driver seat -> smooth cockpit view.
+
+        The offset is in the ego's own frame, so the view turns/pitches/rolls with the car. The ego is
+        engine-driven (bridge teleport in VIL, sync locally), so the attached camera is smooth with no
+        per-frame VSE positioning. Falls back to the free top-down camera if no live actor.
+        """
+        try:
+            alive = bool(actor and actor.is_alive)
+        except Exception:
+            alive = False
+        if not alive:
+            self._camera_attached_to_ego = False
+            return
+        self._camera_attached_to_ego = True
+        try:
+            self.restart_camera_sensor(
+                attach_to=actor,
+                transform=carla.Transform(
+                    carla.Location(x=self.cockpit_x, y=self.cockpit_y, z=self.cockpit_z),
+                    carla.Rotation(pitch=self.cockpit_pitch),
+                ),
+                attachment_type=carla.AttachmentType.Rigid,
+            )
+        except Exception as exc:
+            print(f"[Camera] Failed to attach cockpit camera to ego: {exc}")
+            self._camera_attached_to_ego = False
+            try:
+                self.restart_camera_sensor(attach_to=None, transform=self.camera_controller.get_carla_transform())
+            except Exception:
+                pass
+
+    def _detach_camera_from_ego(self) -> None:
+        """Re-spawn the free top-down camera after a cockpit attach."""
+        if not self._camera_attached_to_ego:
+            return
+        self._camera_attached_to_ego = False
+        try:
+            self.restart_camera_sensor(attach_to=None, transform=self.camera_controller.get_carla_transform())
+        except Exception as exc:
+            print(f"[Camera] Failed to detach cockpit camera: {exc}")
+
+    def _is_camera_engine_attached(self) -> bool:
+        """True while the camera is rigid-attached to a CARLA actor (spectator chase or ego cockpit).
+        The engine drives it, so the follow tick/step/apply must not also call set_transform."""
+        return self._camera_attached_to_spectator or self._camera_attached_to_ego
+
     def _stop_playback_camera_follow(self) -> None:
         """Stop playback camera following and clear tick-based updates."""
+        self._detach_camera_from_spectator()  # no-op unless spectator-attached (chase)
+        self._detach_camera_from_ego()        # no-op unless ego-attached (cockpit)
+        self.playback_camera_mode = "topdown"
         self._playback_camera_unregister_tick_callback()
         self.playback_camera_follow_enabled = False
         self.playback_camera_follow_pending = False
@@ -6955,6 +7489,10 @@ class CameraImageProcessor:
 
     def _start_playback_camera_follow(self, actor: carla.Actor) -> None:
         """Begin camera following for the given actor during playback."""
+        # Reset predictive-follow state so a new follow doesn't inherit stale velocity.
+        self._playback_camera_follow_vel = (0.0, 0.0)
+        self._playback_camera_follow_prev_target = None
+        self._playback_camera_follow_prev_t = 0.0
         controller = self.camera_controller
         if not actor or not controller:
             self._playback_camera_follow_local_offset = (0.0, 0.0, 0.0)
@@ -6971,15 +7509,19 @@ class CameraImageProcessor:
             self._playback_camera_target_transform = None
             return
 
-        # Reuse the manual control helper to compute local offset
-        local_offset = self._manual_control_compute_local_offset(actor_transform, controller)
+        # Playback follow always sits directly above the ego (top-down); the camera was
+        # focused on the editor ego, not this follow target, so a relative horizontal
+        # offset would be stale. Zero horizontal offset keeps the camera over the ego.
+        local_offset = (0.0, 0.0, controller.height - actor_transform.location.z)
         self._playback_camera_follow_local_offset = local_offset
-        self._playback_camera_target_transform = self._manual_control_build_world_transform(actor_transform, local_offset)
+        self._playback_camera_target_transform = self._build_follow_target(actor_transform, local_offset)
         self._playback_camera_apply_target_transform()
         self._playback_camera_register_tick_callback()
 
     def _playback_camera_apply_target_transform(self, *, force: bool = False) -> None:
         """Apply the computed camera transform to the camera controller and spectator."""
+        if self._is_camera_engine_attached():
+            return  # camera is engine-attached to the spectator; don't fight it with set_transform
         transform = self._playback_camera_target_transform
         if not transform:
             return
@@ -6996,9 +7538,10 @@ class CameraImageProcessor:
         try:
             if self.camera_sensor:
                 self.camera_sensor.set_transform(transform)
-            if self.world:
-                spectator = self.world.get_spectator()
-                spectator.set_transform(transform)
+            # Spectator intentionally NOT moved: it's unhooked from the editor
+            # camera. During manual control / playback an ego ("ego_vehicle"/"hero")
+            # exists and is CARLA's large-map streaming anchor, so the spectator is
+            # dropped by the LargeMapManager and moving it would have no effect.
         except Exception:
             pass
         self.camera_is_moving = False
@@ -7025,38 +7568,51 @@ class CameraImageProcessor:
         finally:
             self._playback_camera_tick_subscription = None
 
-    def _playback_camera_on_world_tick(self, _snapshot) -> None:
-        """Snap the camera to the ego offset each simulator tick (playback mode)."""
+    def _playback_camera_on_world_tick(self, snapshot) -> None:
+        """Update the follow target each simulator tick (playback mode).
+
+        Reads the ego pose from the tick's world snapshot (the exact pose for the frame being
+        rendered) rather than a fresh get_transform() RPC, so the target matches the rendered
+        frame. The camera is eased toward this target per render frame in
+        _playback_camera_follow_step(); it is intentionally NOT snapped here, which is what keeps
+        the top-down view smooth when the ego is teleported asynchronously (e.g. VIL).
+        """
         if not self.playback_camera_follow_enabled:
             self._playback_camera_unregister_tick_callback()
             return
+        if self._is_camera_engine_attached():
+            return  # engine drives the camera while attached to the spectator
         actor = self.playback_camera_follow_actor
         if not actor:
             return
         try:
             if not actor.is_alive:
                 return
-            actor_transform = actor.get_transform()
+            # B: same-frame pose from the snapshot; fall back to an RPC if not present yet.
+            actor_snapshot = snapshot.find(actor.id) if snapshot is not None else None
+            actor_transform = actor_snapshot.get_transform() if actor_snapshot is not None else actor.get_transform()
         except Exception:
             return
 
         local_offset = self._playback_camera_follow_local_offset
-        self._playback_camera_target_transform = self._manual_control_build_world_transform(actor_transform, local_offset)
-        self._playback_camera_apply_target_transform()
+        self._playback_camera_target_transform = self._build_follow_target(actor_transform, local_offset)
 
     def _playback_camera_follow_update(self, dt: float) -> None:
         """Update playback camera follow state - find ego and start following."""
-        # Already following? Just check actor is still alive
+        # Already following? Keep the camera eased onto the ego (and stop if it died).
         if self.playback_camera_follow_enabled:
             actor = self.playback_camera_follow_actor
             if not actor:
                 self._stop_playback_camera_follow()
-            else:
-                try:
-                    if not actor.is_alive:
-                        self._stop_playback_camera_follow()
-                except Exception:
+                return
+            try:
+                if not actor.is_alive:
                     self._stop_playback_camera_follow()
+                    return
+            except Exception:
+                self._stop_playback_camera_follow()
+                return
+            self._playback_camera_follow_step(dt)
             return
 
         # Not pending? Nothing to do
@@ -7079,6 +7635,76 @@ class CameraImageProcessor:
         self.playback_camera_follow_enabled = True
         self.playback_camera_follow_pending = False
         self._start_playback_camera_follow(actor)
+        # Attach for the starting camera mode (chase/cockpit) now that the ego exists.
+        self._apply_playback_camera_attach()
+
+    def _playback_camera_follow_step(self, dt: float) -> None:
+        """Ease the top-down camera toward the follow target (set per world tick).
+
+        Two tunable class attrs (edit then restart VSE):
+          _playback_camera_follow_tau  - exponential smoothing time constant (s); 0 = snap, larger = floatier.
+          _playback_camera_follow_lead - predictive lead (s): aim ahead by the ego's estimated velocity
+                                         to cancel the camera's one-tick set_transform lag. 0 = off.
+        Easing removes the async-teleport shake; the optional lead tightens the lock without the snap
+        wobble. Velocity is estimated from observed target motion (works with CARLA physics off on the
+        ego). Skipped during free-look so the user can still detach and pan.
+        """
+        if self._is_camera_engine_attached():
+            return  # engine drives the camera while attached to the spectator
+        target = self._playback_camera_target_transform
+        controller = self.camera_controller
+        if target is None or not controller:
+            return
+        if self.manual_camera_free_look_active:
+            return
+        tx = float(target.location.x)
+        ty = float(target.location.y)
+        tz = float(target.location.z)
+
+        # Estimate ego velocity from how the target moves (only when it actually changes), then
+        # lead the aim point so the camera arrives where the ego will be, not where it was.
+        now = time.time()
+        prev = self._playback_camera_follow_prev_target
+        moved = prev is None or abs(tx - prev[0]) > 1e-4 or abs(ty - prev[1]) > 1e-4
+        if prev is not None and moved:
+            dtt = max(1e-3, now - self._playback_camera_follow_prev_t)
+            raw_vx = (tx - prev[0]) / dtt
+            raw_vy = (ty - prev[1]) / dtt
+            vbeta = 0.5  # low-pass the velocity estimate across target updates
+            vx, vy = self._playback_camera_follow_vel
+            self._playback_camera_follow_vel = (vx + (raw_vx - vx) * vbeta,
+                                                vy + (raw_vy - vy) * vbeta)
+        if moved:
+            self._playback_camera_follow_prev_target = (tx, ty)
+            self._playback_camera_follow_prev_t = now
+        lead = max(0.0, float(self._playback_camera_follow_lead))
+        tx = tx + self._playback_camera_follow_vel[0] * lead
+        ty = ty + self._playback_camera_follow_vel[1] * lead
+
+        cx = float(getattr(controller, "center_x", tx))
+        cy = float(getattr(controller, "center_y", ty))
+        cz = float(getattr(controller, "height", tz))
+        tau = max(1e-3, float(self._playback_camera_follow_tau))
+        alpha = 1.0 - math.exp(-max(0.0, float(dt)) / tau)
+        # Snap the residual when essentially on target to avoid endless micro-stepping.
+        nx = tx if abs(tx - cx) < 0.01 else cx + (tx - cx) * alpha
+        ny = ty if abs(ty - cy) < 0.01 else cy + (ty - cy) * alpha
+        nz = tz if abs(tz - cz) < 0.01 else cz + (tz - cz) * alpha
+        controller.center_x = nx
+        controller.center_y = ny
+        controller.height = nz
+        if hasattr(controller, "stop_moving"):
+            controller.stop_moving()
+        try:
+            if self.camera_sensor:
+                self.camera_sensor.set_transform(
+                    carla.Transform(carla.Location(x=nx, y=ny, z=nz), target.rotation)
+                )
+        except Exception:
+            pass
+        # Mirror _playback_camera_apply_target_transform: follow is not treated as a user pan.
+        self.camera_is_moving = False
+        self.camera_movement_timer = time.time()
 
     def _register_pedestrian_highlight_tick(self) -> None:
         """Subscribe to CARLA world ticks to draw pedestrian rings."""
@@ -7594,24 +8220,43 @@ class CameraImageProcessor:
                 for data in vehicle_data:
                     try:
                         vehicle_bp = blueprint_library.find(data['blueprint'])
-                        
-                        # Adjust vehicle spawn height
-                        adjusted_transform = carla.Transform(data['transform'].location, data['transform'].rotation)
-                        adjusted_transform.location.z = get_ground_height(
+
+                        # Adjust vehicle spawn height (with placement clearance so
+                        # the respawn doesn't clip the ground / get rejected)
+                        loc = data['transform'].location
+                        rot = data['transform'].rotation
+                        ground_z = get_ground_height(
                             self.world,
-                            data['transform'].location,
+                            loc,
                             cached_map=self.cached_map,
+                            exclude_actors=self.spawned_vehicles,
                         )
-                        
-                        vehicle = self.world.try_spawn_actor(vehicle_bp, adjusted_transform)
+                        adjusted_transform = carla.Transform(carla.Location(loc.x, loc.y, ground_z), rot)
+                        if data['blueprint'].startswith('walker.'):
+                            vehicle = self.world.try_spawn_actor(
+                                vehicle_bp, carla.Transform(carla.Location(loc.x, loc.y, ground_z + 1.5), rot)
+                            )
+                            veh_z = None
+                            if vehicle:
+                                try:
+                                    bbox_z = float(getattr(vehicle.bounding_box.extent, "z", 1.0))
+                                except Exception:
+                                    bbox_z = 1.0
+                                veh_z = ground_z + bbox_z + PEDESTRIAN_PLACEMENT_CLEARANCE_M
+                                vehicle.set_transform(carla.Transform(carla.Location(loc.x, loc.y, veh_z), rot))
+                        else:
+                            vehicle, veh_z = spawn_vehicle_grounded(
+                                self.world, vehicle_bp, loc.x, loc.y, rot, ground_z
+                            )
                         if vehicle:
+                            if veh_z is not None:
+                                adjusted_transform.location.z = veh_z
                             vehicle.set_simulate_physics(data['physics_enabled'])
                             self.spawned_vehicles.append(vehicle)
                             respawned_count += 1
                             print(f"Vehicle respawned at adjusted height: {adjusted_transform.location.z:.2f}")
                         else:
                             print(f"Failed to respawn vehicle {data['blueprint']} - location might be blocked")
-                            print(f"Failed to respawn vehicle: {data['blueprint']} - location may be blocked")
                     except Exception as e:
                         print(f"Error respawning vehicle {data['blueprint']}: {e}")
                 
@@ -7742,6 +8387,10 @@ class CameraImageProcessor:
         transform = vehicle.get_transform()
         transform.rotation.yaw = yaw
         vehicle.set_transform(transform)
+        # Persist the computed heading so it survives saving: the save path reads
+        # self.vehicle_transforms first (see _build_vehicle_snapshot), so without this
+        # the pedestrian's rotation would still serialize as its stale spawn yaw.
+        self.vehicle_transforms[actor_id] = carla.Transform(transform.location, transform.rotation)
 
         if (self.editor and hasattr(self.editor, 'info_panel')):
             panel = self.editor.info_panel
@@ -7832,6 +8481,7 @@ class CameraImageProcessor:
             cached_map=cached_map,
             return_metadata=True,
             probe_on_miss=probe_on_miss,
+            exclude_actors=[v for v in getattr(self, 'spawned_vehicles', []) if v is not None],
         )
         if return_metadata:
             return result
@@ -7856,8 +8506,8 @@ class CameraImageProcessor:
                     bbox_extent_z = float(getattr(actor.bounding_box.extent, "z", 1.0))
                 except Exception:
                     bbox_extent_z = 1.0
-                # Keep at least a 0.2m buffer above ground
-                ped_height_offset = max(0.2, bbox_extent_z + 0.2)
+                # Walker transform is body-center: feet sit PEDESTRIAN clearance above ground.
+                ped_height_offset = bbox_extent_z + PEDESTRIAN_PLACEMENT_CLEARANCE_M
             
             self.moving_vehicle = False
             if actor and actor.is_alive:
@@ -7901,10 +8551,22 @@ class CameraImageProcessor:
                     )
 
                     ground_height = ground_sample.get('height', final_location.z)
+                    base_ground = ground_height if ground_height is not None else final_location.z
                     if is_pedestrian and ped_height_offset is not None:
-                        spawn_height = (ground_height if ground_height is not None else final_location.z) + ped_height_offset
+                        spawn_height = base_ground + ped_height_offset
                     else:
-                        spawn_height = (ground_height if ground_height is not None else final_location.z) + 0.2
+                        # The actor is lifted aside, so probe try_spawn at this XY to
+                        # find the lowest collision-free height — drag uses set_transform
+                        # (no collision gate), so without this a vehicle dragged onto a
+                        # curb/sidewalk saves a Z the post-Play restore can't respawn.
+                        try:
+                            veh_bp = self.world.get_blueprint_library().find(actor.type_id)
+                            spawn_height = lowest_spawnable_z(
+                                self.world, veh_bp, corrected_x, corrected_y,
+                                corrected_rotation, base_ground,
+                            )
+                        except Exception:
+                            spawn_height = base_ground + VEHICLE_PLACEMENT_CLEARANCE_M
 
                     corrected_location = carla.Location(
                         corrected_x,
@@ -8129,7 +8791,18 @@ class CameraImageProcessor:
         self.waypoint_display_vehicle_id = waypoint_vehicle_id
 
         print("Returned to normal editor mode")
-    
+
+    def stop_destination_creation(self):
+        """Cancel destination placement mode and return to normal editor mode."""
+        if not self.creating_destination:
+            return
+
+        self.creating_destination = False
+        self.destination_marker_coordinates = None
+        # Deselect the vehicle to return to normal editor mode, mirroring waypoint cancel.
+        self.clear_vehicle_selection()
+        print("Destination placement cancelled. Returned to normal editor mode.")
+
     def place_waypoint_at_click(self, screen_x, screen_y):
         """Place a waypoint at the clicked location"""
         if not (self.creating_waypoint and self.waypoint_vehicle and self.waypoint_vehicle.is_alive):
@@ -8194,7 +8867,6 @@ class CameraImageProcessor:
             # else: keep ground_z from OpenDRIVE (world_coords['z'])
         
         idle_time_default = 0.0
-        turn_time_default = 0.0
         speed_default = 50
         if self.waypoint_vehicle:
             if self.waypoint_vehicle.type_id.startswith('walker.'):
@@ -8209,8 +8881,7 @@ class CameraImageProcessor:
             'snapped': world_coords.get('snapped', False),
             'yaw': world_coords.get('yaw', None),
             'speed_km_h': speed_default,
-            'idle_time_s': idle_time_default,
-            'turn_time_s': turn_time_default
+            'idle_time_s': idle_time_default
         }
         
         # Create and execute command to place waypoint
@@ -8315,7 +8986,6 @@ class CameraImageProcessor:
             'snapped': True,
             'yaw': yaw,
             'speed_km_h': speed_km_h,
-            'turn_time_s': 0.0,
             'auto_generated': True
         }
 
@@ -8517,7 +9187,6 @@ class CameraImageProcessor:
                         'index': len(waypoints_to_add) + 1,
                         'snapped': False,
                         'speed_km_h': default_speed,
-                        'turn_time_s': 0.0,
                         'auto_generated': True
                     }
                     waypoints_to_add.append(intermediate)
@@ -8545,7 +9214,6 @@ class CameraImageProcessor:
                     'snapped': dest_lane['success'],
                     'yaw': destination.get('yaw', None),
                     'speed_km_h': max(default_speed, 10),
-                    'turn_time_s': 0.0,
                     'auto_generated': True,
                     'is_destination': False
                 }
@@ -8560,7 +9228,6 @@ class CameraImageProcessor:
             'snapped': False,  # Mark as off-road since it's the actual clicked point
             'yaw': destination.get('yaw', None),
             'speed_km_h': 0,  # Stop at destination
-            'turn_time_s': 0.0,
             'auto_generated': True,
             'is_destination': True
         }
@@ -8689,6 +9356,7 @@ class CameraImageProcessor:
             self.world,
             carla.Location(world_coords['x'], world_coords['y'], world_coords['z']),
             cached_map=self.cached_map,
+            exclude_actors=self.spawned_vehicles,
         )
 
         # Create new trigger with default radius
@@ -8746,6 +9414,7 @@ class CameraImageProcessor:
             self.world,
             carla.Location(world_coords['x'], world_coords['y'], world_coords['z']),
             cached_map=self.cached_map,
+            exclude_actors=self.spawned_vehicles,
         )
 
         center = {
@@ -8937,6 +9606,7 @@ class CameraImageProcessor:
                 self.world,
                 carla.Location(trigger['x'], trigger['y'], trigger['z']),
                 cached_map=self.cached_map,
+                exclude_actors=self.spawned_vehicles,
             )
             trigger['z'] = ground_z
             print(f"Stopped moving trigger {self.selected_trigger_index}, adjusted Z to {ground_z:.2f}")
@@ -9412,6 +10082,7 @@ class CameraImageProcessor:
                     self.world,
                     location,
                     cached_map=self.cached_map,
+                    exclude_actors=self.spawned_vehicles,
                 )
                 adjusted_height = float(ground_z)
                 updated_center = {
@@ -9711,15 +10382,6 @@ class CameraImageProcessor:
     def clear_actor_idle_time(self, actor_id):
         self.actor_idle_times.pop(actor_id, None)
 
-    def get_actor_turn_time(self, actor_id, default=0.0):
-        return self.actor_turn_times.get(actor_id, default)
-
-    def set_actor_turn_time(self, actor_id, value):
-        self.actor_turn_times[actor_id] = value
-
-    def clear_actor_turn_time(self, actor_id):
-        self.actor_turn_times.pop(actor_id, None)
-
     def get_vehicle_color(self, vehicle_id):
         return self.vehicle_colors.get(vehicle_id)
 
@@ -9824,7 +10486,6 @@ class CameraImageProcessor:
         speed,
         destination_speed=None,
         idle_time=0.0,
-        turn_time=0.0,
         color=None,
         ignore_flags=None,
         max_lat_acc=3.0,
@@ -9832,7 +10493,6 @@ class CameraImageProcessor:
         self.set_vehicle_speed(vehicle_id, speed)
         self.set_vehicle_destination_speed(vehicle_id, destination_speed)
         self.set_actor_idle_time(vehicle_id, idle_time)
-        self.set_actor_turn_time(vehicle_id, turn_time)
         self.set_vehicle_color(vehicle_id, color)
         self.set_vehicle_ignore_flags(vehicle_id, ignore_flags or {})
         if max_lat_acc is None:
@@ -9843,7 +10503,6 @@ class CameraImageProcessor:
         self.clear_vehicle_speed(vehicle_id)
         self.clear_vehicle_destination_speed(vehicle_id)
         self.clear_actor_idle_time(vehicle_id)
-        self.clear_actor_turn_time(vehicle_id)
         self.clear_vehicle_color(vehicle_id)
         self.clear_vehicle_ignore_flags(vehicle_id)
         self.clear_vehicle_max_lat_acc(vehicle_id)
@@ -9863,7 +10522,6 @@ class CameraImageProcessor:
         self.vehicle_speeds.clear()
         self.vehicle_destination_speeds.clear()
         self.actor_idle_times.clear()
-        self.actor_turn_times.clear()
         self.vehicle_colors.clear()
         self.vehicle_ignore_traffic_lights.clear()
         self.vehicle_ignore_stop_signs.clear()
@@ -9943,7 +10601,6 @@ class CameraImageProcessor:
                 'speed_km_h': waypoint.get('speed_km_h', default_speed),
                 'speed_deviation_km_h': waypoint.get('speed_deviation_km_h', 0),
                 'idle_time_s': waypoint.get('idle_time_s', 0.0),
-                'turn_time_s': waypoint.get('turn_time_s', 0.0),
                 'auto_generated': waypoint.get('auto_generated', False),
                 'is_destination': is_last,
             }
@@ -10026,8 +10683,6 @@ class CameraImageProcessor:
             'idle_time_s': self.get_actor_idle_time(vehicle.id, 0.0),
             'waypoints': [],
         }
-        if vehicle.type_id.startswith('walker.'):
-            vehicle_data['turn_time_s'] = self.get_actor_turn_time(vehicle.id, 0.0)
 
         color = self.get_vehicle_color(vehicle.id)
         if color is not None:
@@ -10312,7 +10967,7 @@ class CameraImageProcessor:
         Preserved: entity spawns, waypoint paths, speed, per-waypoint idle times,
                    proximity triggers, traffic-light triggers (pos-based),
                    weather (first keyframe, static), map name, NPCs, vehicle color.
-        Lost:      speed_deviation, turn_time_s, animated weather,
+        Lost:      speed_deviation, animated weather,
                    ignore_* flags, max_lat_acc.
         """
         import xml.etree.ElementTree as ET
@@ -10512,13 +11167,20 @@ class CameraImageProcessor:
             """
             segments = []
             px, py, pz = spawn_loc['x'], spawn_loc['y'], spawn_loc['z']
+            # Departure-speed semantics (match vse_play.py playback): each leg is
+            # walked at the speed of the point it leaves. The first leg leaves the
+            # spawn at the pedestrian's initial speed; later legs carry the previous
+            # waypoint's speed. The final waypoint's speed is never used to travel.
+            departure_speed_kmh = default_speed_kmh
             for i, wp in enumerate(waypoints):
                 loc = wp.get('location', {})
                 x = loc.get('x', px); y = loc.get('y', py); z = loc.get('z', pz)
-                speed_ms = max((wp.get('speed_km_h') or default_speed_kmh or 5.0) / 3.6, 0.001)
+                speed_ms = max((departure_speed_kmh or 5.0) / 3.6, 0.001)
                 dist = math.sqrt((x - px) ** 2 + (y - py) ** 2 + (z - pz) ** 2)
                 if dist > 0.01:
                     segments.append(('walk', dist, speed_ms))
+                # This waypoint's speed governs the next leg.
+                departure_speed_kmh = wp.get('speed_km_h') or default_speed_kmh
                 idle = float(wp.get('idle_time_s') or 0.0)
                 if idle > 0:
                     segments.append(('idle', idle))
@@ -11247,7 +11909,6 @@ class CameraImageProcessor:
             default_speed = 5 if vehicle_data.get('type', '').startswith('walker.') else 50
             speed_value = vehicle_data.get('speed_km_h', default_speed)
             idle_value = vehicle_data.get('idle_time_s', 0.0)
-            turn_value = vehicle_data.get('turn_time_s', 0.0)
             color = vehicle_data.get('color')
             ignore_flags = {
                 'traffic_lights': vehicle_data.get('ignore_traffic_lights', False),
@@ -11292,7 +11953,6 @@ class CameraImageProcessor:
                     'speed_km_h': wp_data.get('speed_km_h', 50),
                     'speed_deviation_km_h': deviation_val,
                     'idle_time_s': wp_data.get('idle_time_s', 0.0),
-                    'turn_time_s': wp_data.get('turn_time_s', 0.0),
                     'is_destination': wp_data.get('is_destination', False),
                 })
 
@@ -11302,7 +11962,6 @@ class CameraImageProcessor:
                 speed=speed_value,
                 destination_speed=destination_speed_value,
                 idle_time=idle_value,
-                turn_time=turn_value,
                 color=color,
                 ignore_flags=ignore_flags,
                 max_lat_acc=max_lat_acc_value,
@@ -11382,9 +12041,7 @@ class CameraImageProcessor:
             actor.id,
             speed=ego_default_speed,
             destination_speed=destination_speed_value,
-            idle_time=0.0,
-            turn_time=0.0,
-            color=ego_color,
+            idle_time=0.0,            color=ego_color,
             ignore_flags=ignore_flags,
             max_lat_acc=max_lat_acc_value,
         )
@@ -11404,7 +12061,6 @@ class CameraImageProcessor:
                     'yaw': wp_data.get('yaw', None),
                     'speed_km_h': wp_data.get('speed_km_h', ego_default_speed),
                     'idle_time_s': wp_data.get('idle_time_s', 0.0),
-                    'turn_time_s': wp_data.get('turn_time_s', 0.0),
                     'is_destination': wp_data.get('is_destination', idx == total - 1),
                 }
                 deviation_val = wp_data.get('speed_deviation_km_h', 0)
@@ -11479,7 +12135,6 @@ class CameraImageProcessor:
                         'yaw': wp_data.get('yaw', None),
                         'speed_km_h': wp_data.get('speed_km_h', ego_default_speed),
                         'idle_time_s': wp_data.get('idle_time_s', 0.0),
-                        'turn_time_s': wp_data.get('turn_time_s', 0.0),
                         'is_destination': wp_data.get('is_destination', idx == total - 1),
                     }
                     deviation_val = wp_data.get('speed_deviation_km_h', 0)
@@ -11548,9 +12203,7 @@ class CameraImageProcessor:
                     ego_actor.id,
                     speed=ego_default_speed,
                     destination_speed=destination_speed_value,
-                    idle_time=float(ego_data.get('idle_time_s', 0.0) or 0.0),
-                    turn_time=0.0,
-                    color=ego_color,
+                    idle_time=float(ego_data.get('idle_time_s', 0.0) or 0.0),                    color=ego_color,
                     ignore_flags=ignore_flags,
                     max_lat_acc=max_lat_acc_value,
                 )
@@ -11584,9 +12237,7 @@ class CameraImageProcessor:
                         fallback_actor.id,
                         speed=ego_default_speed,
                         destination_speed=destination_speed_value,
-                        idle_time=float(ego_data.get('idle_time_s', 0.0) or 0.0),
-                        turn_time=0.0,
-                        color=ego_color,
+                        idle_time=float(ego_data.get('idle_time_s', 0.0) or 0.0),                        color=ego_color,
                         ignore_flags=ignore_flags,
                         max_lat_acc=max_lat_acc_value,
                     )
@@ -12077,8 +12728,7 @@ class CameraImageProcessor:
             'snapped': waypoint.get('snapped', False),
             'yaw': waypoint.get('yaw', None),
             'speed_km_h': waypoint.get('speed_km_h', 50),
-            'idle_time_s': waypoint.get('idle_time_s', 0.0),
-            'turn_time_s': waypoint.get('turn_time_s', 0.0)
+            'idle_time_s': waypoint.get('idle_time_s', 0.0)
         }
         # Store original height for potential movement
         self.waypoint_original_height = waypoint['z']
@@ -12611,6 +13261,8 @@ class CameraImageProcessor:
 
     def handle_traffic_light_click(self, screen_x: int, screen_y: int) -> bool:
         """Check if a traffic light marker was clicked and select it."""
+        if not self.traffic_lights_visible:
+            return False  # Overlay hidden: let clicks pass through to actors underneath
         if not self.traffic_light_groups:
             return False
 
@@ -12644,6 +13296,8 @@ class CameraImageProcessor:
 
     def handle_traffic_light_action_click(self, screen_x: int, screen_y: int) -> bool:
         """Handle clicks on the traffic light action menu icons."""
+        if not self.traffic_lights_visible:
+            return False  # Menu is not rendered while the overlay is hidden
         group = self.selected_traffic_light_group
         if not group:
             return False
@@ -13421,6 +14075,7 @@ class CameraImageProcessor:
                 base_location,
                 debug=debug_mode,
                 cached_map=cached_map,
+                exclude_actors=self.spawned_vehicles,
             )
             spawn_height = ground_height + 0.2
 
@@ -13607,7 +14262,15 @@ class CameraImageProcessor:
     def _get_traffic_light_rectangle_points(
         self, traffic_light: carla.TrafficLight
     ) -> Optional[Tuple[List[carla.Location], Optional[carla.Location]]]:
-        """Return world-space corners and center for the traffic light trigger rectangle."""
+        """Return world-space corners and center for the traffic light stop-line strip.
+
+        The drawn/clickable rectangle is a strip of TRAFFIC_LIGHT_STOP_LINE_MARKER_DEPTH meters
+        anchored at the trigger box's front edge (the side toward the actual stop line, i.e. the
+        downstream edge along the road travel direction), keeping the full lateral width. The
+        returned center stays at the full trigger-box center (it feeds default trigger placement,
+        connectors and list focus). If the travel direction can't be determined from a road
+        waypoint, the full box is returned (previous behavior).
+        """
         if not traffic_light:
             return None
         cached = self._traffic_light_rectangles.get(traffic_light.id)
@@ -13629,11 +14292,35 @@ class CameraImageProcessor:
 
         trigger_transform = carla.Transform(trigger_volume.location, trigger_volume.rotation)
 
+        x_lo, x_hi = -float(extent.x), +float(extent.x)
+        y_lo, y_hi = -float(extent.y), +float(extent.y)
+        try:
+            yaw = float(transform.rotation.yaw) + float(trigger_volume.rotation.yaw)
+            center = transform.transform(trigger_transform.transform(carla.Location()))
+            travel_yaw = self._get_travel_yaw_at(center)
+        except Exception:
+            travel_yaw = None
+        if travel_yaw is not None:
+            if self._heading_diff_180(yaw, travel_yaw) <= self._heading_diff_180(yaw + 90.0, travel_yaw):
+                # Travel runs along local X; front edge is the X side pointing downstream
+                depth = min(TRAFFIC_LIGHT_STOP_LINE_MARKER_DEPTH, x_hi - x_lo)
+                if self._heading_diff_360(yaw, travel_yaw) <= 90.0:
+                    x_lo = x_hi - depth
+                else:
+                    x_hi = x_lo + depth
+            else:
+                # Travel runs along local Y (heading yaw + 90)
+                depth = min(TRAFFIC_LIGHT_STOP_LINE_MARKER_DEPTH, y_hi - y_lo)
+                if self._heading_diff_360(yaw + 90.0, travel_yaw) <= 90.0:
+                    y_lo = y_hi - depth
+                else:
+                    y_hi = y_lo + depth
+
         local_corners = [
-            carla.Location(+extent.x, +extent.y, 0.0),
-            carla.Location(-extent.x, +extent.y, 0.0),
-            carla.Location(-extent.x, -extent.y, 0.0),
-            carla.Location(+extent.x, -extent.y, 0.0),
+            carla.Location(x_hi, y_hi, 0.0),
+            carla.Location(x_lo, y_hi, 0.0),
+            carla.Location(x_lo, y_lo, 0.0),
+            carla.Location(x_hi, y_lo, 0.0),
         ]
 
         world_corners: List[carla.Location] = []
@@ -14439,6 +15126,10 @@ class CameraImageProcessor:
     def render_all_overlays(self, screen):
         """Render world-space overlays (waypoints, lanes, triggers, etc).
         Does NOT include action menus or selection indicators - those are rendered earlier via render_action_menus()."""
+        # Chase and cockpit are perspective views (tilted / in-car); the editor's top-down
+        # screen<->world projection would misplace these overlays, so skip them for a clean view.
+        if getattr(self, "playback_camera_mode", "topdown") in ("chase", "cockpit"):
+            return
         self.render_waypoint_creation_overlay(screen)
         self.render_destination_creation_overlay(screen)
         self.render_opendrive_lanes_overlay(screen)
@@ -14542,11 +15233,6 @@ class CameraImageProcessor:
             self.clear_actor_idle_time(old_id)
             self.set_actor_idle_time(new_id, idle)
 
-        if old_id in self.actor_turn_times:
-            turn = self.actor_turn_times[old_id]
-            self.clear_actor_turn_time(old_id)
-            self.set_actor_turn_time(new_id, turn)
-
         if old_id in self.vehicle_trigger_centers:
             center = self.vehicle_trigger_centers.pop(old_id)
             self.vehicle_trigger_centers[new_id] = center
@@ -14562,7 +15248,9 @@ class CameraImageProcessor:
         if self.ego_vehicle_id == old_id:
             self.ego_vehicle_id = new_id
             if self.manual_control_actor and self.manual_control_actor.id == old_id:
-                self.disable_manual_control()
+                # The ego respawned under a new id; re-pend so the finder re-attaches to it
+                # (it checks ego_vehicle_id first) instead of dropping manual control for good.
+                self.request_manual_control()
 
         # Update selection and UI references
         if self.selected_vehicle and self.selected_vehicle.id == old_id:
@@ -15907,7 +16595,8 @@ class TrafficLightGroupSelectionMenu:
             self.scroll_offset = max_scroll
 
         visible_entries = entries[self.scroll_offset:self.scroll_offset + self.max_visible_items]
-        tl_list_rows = max(len(visible_entries), 1)
+        # When empty, reserve 2 rows so the centered "No …" title + "Tip: …" line both fit.
+        tl_list_rows = len(visible_entries) if visible_entries else 2
         tl_list_height = tl_list_rows * self.item_height
 
         title_height = self.font.get_height() + 12
@@ -15917,7 +16606,8 @@ class TrafficLightGroupSelectionMenu:
         # --- Global trigger section geometry ---
         processor = self._get_camera_processor()
         has_global_trigger = bool(processor and getattr(processor, "triggers", None))
-        global_list_height = 1 * self.item_height  # always 1 row (entry or empty)
+        # 1 row for the actual entry; 2 rows when empty so the title + tip both fit.
+        global_list_height = (1 if has_global_trigger else 2) * self.item_height
 
         global_section_height = (
             header_block_height +
@@ -16500,7 +17190,7 @@ class ScenarioMenu:
     def __init__(self, world_handler):
         self.world_handler = world_handler
         self.title = "Scenario"
-        self.options = ["New", "Open", "Save", "Export .xosc"]
+        self.options = ["New", "Open", "Save As", "Export .xosc"]
 
         self.menu_width = 150
         self.item_height = 35
@@ -16567,8 +17257,8 @@ class ScenarioMenu:
                     print("Opening scenario...")
                     self.world_handler.scenario_menu_visible = False
                     self.world_handler.load_scenario_with_dialog()
-                elif action == "save":
-                    print("Saving scenario...")
+                elif action == "save as":
+                    print("Save As scenario...")
                     self.world_handler.scenario_menu_visible = False
                     self.world_handler.save_scenario_with_dialog()
                 elif action == "export .xosc":
@@ -17448,6 +18138,23 @@ class EnhancedFileDialog(UIFileDialog):
 class ResultWindow(UIWindow):
     """Modal window that displays scenario run results with copy/save/close controls."""
 
+    _result_theme_loaded = False
+
+    @classmethod
+    def _ensure_result_theme(cls, manager: UIManager) -> None:
+        """Remove the border/shadow frame on the result text area + scroll container (once)."""
+        if cls._result_theme_loaded:
+            return
+        no_frame = {"misc": {"border_width": "0", "shadow_width": "0"}}
+        try:
+            manager.get_theme().load_theme({
+                "#result_text_box": no_frame,
+                "#result_scroll": no_frame,
+            })
+        except Exception as exc:
+            print(f"[Results] Warning: failed to apply result theme overrides: {exc}")
+        cls._result_theme_loaded = True
+
     def __init__(
         self,
         rect: pygame.Rect,
@@ -17466,6 +18173,9 @@ class ResultWindow(UIWindow):
             always_on_top=True,
         )
         self.set_blocking(True)
+        # Drop the border/shadow "frame" on the text area and scroll container — the window now
+        # hugs the content, so the frame is just visual noise.
+        self._ensure_result_theme(manager)
 
         self._on_copy = on_copy
         self._on_save = on_save
@@ -17473,69 +18183,137 @@ class ResultWindow(UIWindow):
 
         margin = 10
         container_width, container_height = self.get_container().get_size()
+        # Window chrome (title bar + borders) = outer window size minus inner container size; used
+        # later to fit the window to its content.
+        init_win_w, init_win_h = self.rect.size
+        chrome_w = init_win_w - container_width
+        chrome_h = init_win_h - container_height
 
         button_height = 32
         button_spacing = 10
         button_width = 80
-        button_y = container_height - button_height - margin
 
-        text_height = max(60, button_y - margin)
-        text_rect = pygame.Rect(
+        # Scrolling area fills everything above the button row and stretches with the window
+        # (anchored on all four edges). It shows horizontal and/or vertical scrollbars only when the
+        # fixed-size content below is larger than the visible area, and hides them when it fits.
+        scroll_bottom_gap = button_height + (2 * margin)
+        scroll_rect = pygame.Rect(
             margin,
             margin,
             container_width - (2 * margin),
-            text_height - margin,
+            max(60, container_height - scroll_bottom_gap - margin),
         )
-
-        html_text = self._as_html(text)
-        self.text_box = UITextBox(
-            html_text,
-            relative_rect=text_rect,
+        self.scroll_container = UIScrollingContainer(
+            relative_rect=scroll_rect,
             manager=manager,
             container=self,
+            object_id="#result_scroll",
+            anchors={"left": "left", "right": "right", "top": "top", "bottom": "bottom"},
+            should_grow_automatically=False,
+            allow_scroll_x=True,
+            allow_scroll_y=True,
+        )
+
+        # The table is rendered at a fixed monospace size and sized to its true (unwrapped) extent;
+        # the scroll container scrolls to reveal it. We can't trust a raw font measurement for the
+        # width (the theme's rendered monospace metrics differ), so measure pygame_gui's own layout
+        # with a throwaway box that's wide enough not to wrap — doubling if it does. Then the real
+        # box is created at that size so it never wraps and never shows its own (second) scrollbar.
+        est_w, est_h = self._measure_content(manager, text)
+        self._last_scroll_root_size: Optional[Tuple[int, int]] = None
+        html_text = self._as_html(text)
+        natural_w, natural_h = est_w, est_h
+        try:
+            probe_w = max(est_w + 24, 1200)
+            for _ in range(6):
+                probe = UITextBox(
+                    html_text,
+                    relative_rect=pygame.Rect(0, 0, probe_w, est_h),
+                    manager=manager,
+                    container=self,
+                    object_id="#result_text_box",
+                )
+                layout_rect = probe.text_box_layout.layout_rect
+                probe.kill()
+                if layout_rect.width <= probe_w - 8 or probe_w >= 8000:
+                    natural_w = layout_rect.width + 24
+                    natural_h = layout_rect.height + 24
+                    break
+                probe_w = min(8000, probe_w * 2)
+        except Exception:
+            pass
+        self.text_box = UITextBox(
+            html_text,
+            relative_rect=pygame.Rect(0, 0, natural_w, natural_h),
+            manager=manager,
+            container=self.scroll_container,
             object_id="#result_text_box",
         )
+        self._natural_w = natural_w
+        self._natural_h = natural_h
+        # Enable only the axes the content actually overflows, so a scrollbar appears only when the
+        # window is smaller than the table on that axis (and both vanish when it fits). pygame_gui
+        # otherwise forces a spurious horizontal bar whenever a vertical bar is present.
+        self._apply_scroll_axes()
 
-        buttons_total_width = (3 * button_width) + (2 * button_spacing)
-        buttons_start_x = max(
-            margin,
-            (container_width - buttons_total_width) // 2,
-        )
-
+        # Buttons stick to the bottom edge and stay horizontally centered on resize. With a centerx
+        # anchor, the rect's x is the offset of the button's centre from the container centre.
+        button_anchors = {"centerx": "centerx", "top": "bottom", "bottom": "bottom"}
+        button_rel_y = -(button_height + margin)
+        button_step = button_width + button_spacing
         self.copy_button = UIButton(
-            relative_rect=pygame.Rect(buttons_start_x, button_y, button_width, button_height),
+            relative_rect=pygame.Rect(-button_step, button_rel_y, button_width, button_height),
             text="Copy",
             manager=manager,
             container=self,
             object_id="#result_copy_button",
-            anchors={"left": "left", "right": "left", "top": "top", "bottom": "top"},
+            anchors=button_anchors,
         )
         self.save_button = UIButton(
-            relative_rect=pygame.Rect(
-                buttons_start_x + button_width + button_spacing,
-                button_y,
-                button_width,
-                button_height,
-            ),
+            relative_rect=pygame.Rect(0, button_rel_y, button_width, button_height),
             text="Save",
             manager=manager,
             container=self,
             object_id="#result_save_button",
-            anchors={"left": "left", "right": "left", "top": "top", "bottom": "top"},
+            anchors=button_anchors,
         )
         self.close_button = UIButton(
-            relative_rect=pygame.Rect(
-                buttons_start_x + (2 * (button_width + button_spacing)),
-                button_y,
-                button_width,
-                button_height,
-            ),
+            relative_rect=pygame.Rect(button_step, button_rel_y, button_width, button_height),
             text="Close",
             manager=manager,
             container=self,
             object_id="#result_close_button",
-            anchors={"left": "left", "right": "left", "top": "top", "bottom": "top"},
+            anchors=button_anchors,
         )
+
+        # Fit the window to its content on first open so the frame hugs the table (no large empty
+        # area). Grown/shrunk to the content, capped at 90% of the screen so a very large table gets
+        # scrollbars rather than an off-screen window. Anchored children reflow on resize.
+        try:
+            screen = pygame.display.get_surface()
+            sw, sh = screen.get_size() if screen else (init_win_w, init_win_h)
+            max_w, max_h = int(sw * 0.9), int(sh * 0.9)
+            min_w = (3 * button_width) + (2 * button_spacing) + (2 * margin)
+            bar = 20  # pygame_gui scrollbar thickness
+            base_c_w = max(min_w, natural_w + (2 * margin) + 4)
+            base_c_h = natural_h + scroll_bottom_gap + margin + 4
+            # If the table is taller/wider than will fit (the cap kicks in on that axis), that
+            # scrollbar will be shown and steals `bar` px from the cross axis — so widen/heighten to
+            # leave room for it, otherwise the vertical bar forces a spurious horizontal one.
+            v_needed = (base_c_h + chrome_h) > max_h
+            h_needed = (base_c_w + chrome_w) > max_w
+            need_c_w = base_c_w + (bar if v_needed else 0)
+            need_c_h = base_c_h + (bar if h_needed else 0)
+            desired_w = min(max_w, need_c_w + chrome_w)
+            desired_h = min(max_h, need_c_h + chrome_h)
+            if (desired_w, desired_h) != (init_win_w, init_win_h):
+                self.set_dimensions((desired_w, desired_h))
+                self.set_position((max(0, (sw - desired_w) // 2), max(0, (sh - desired_h) // 2)))
+            # Re-evaluate scrollbars for the fitted size.
+            self._last_scroll_root_size = None
+            self._apply_scroll_axes()
+        except Exception:
+            pass
 
     @staticmethod
     def _as_html(text: str) -> str:
@@ -17545,6 +18323,86 @@ class ResultWindow(UIWindow):
         safe = safe.replace(" ", "&nbsp;")
         safe = safe.replace("\n", "<br>")
         return f'<font face="monospace">{safe}</font>'
+
+    @staticmethod
+    def _measure_content(manager: UIManager, text: str, font_size: int = 14) -> Tuple[int, int]:
+        """Natural pixel size of the monospace result text, so the text box never wraps.
+
+        Measured with the actual monospace font pygame_gui would render (falling back to a system
+        monospace font), plus padding to cover the text box's internal border/padding. Slightly
+        over-measuring is safe — it only adds a little scroll slack; under-measuring would wrap.
+        """
+        lines = text.split("\n") or [""]
+        font = None
+        try:
+            font = manager.get_theme().get_font_dictionary().find_font(
+                font_size=font_size, font_name="monospace"
+            )
+        except Exception:
+            font = None
+        if font is None:
+            try:
+                font = pygame.font.SysFont("monospace", font_size)
+            except Exception:
+                font = pygame.font.Font(None, font_size)
+        try:
+            line_h = font.get_linesize()
+        except Exception:
+            line_h = font_size + 6
+        max_w = 0
+        for line in lines:
+            try:
+                w = font.size(line)[0]
+            except Exception:
+                w = len(line) * ((font_size // 2) + 1)
+            if w > max_w:
+                max_w = w
+        # Padding: text box border/padding (width) and a little vertical breathing room.
+        natural_w = max_w + 28
+        natural_h = (line_h * max(1, len(lines))) + 16
+        return natural_w, natural_h
+
+    def _apply_scroll_axes(self) -> None:
+        """Enable horizontal/vertical scrolling only on the axes the table overflows.
+
+        Compared against the scroll container's full (root) area, accounting for the opposite
+        scrollbar's width when present, so each bar shows only when the window is smaller than the
+        table on that axis and both disappear once it fits. Driven from update() on resize.
+        """
+        sc = getattr(self, "scroll_container", None)
+        if sc is None:
+            return
+        try:
+            root = sc._root_container.rect  # full element area (excludes nothing)
+            root_w, root_h = root.width, root.height
+        except Exception:
+            return
+        bar = 20  # pygame_gui scrollbar thickness
+        need_y = self._natural_h > root_h
+        need_x = self._natural_w > (root_w - (bar if need_y else 0))
+        if need_x:
+            need_y = self._natural_h > (root_h - bar)
+        try:
+            sc.allow_scroll_x = need_x
+            sc.allow_scroll_y = need_y
+            sc.set_scrollable_area_dimensions((self._natural_w, self._natural_h))
+        except Exception:
+            pass
+
+    def update(self, time_delta: float) -> None:
+        super().update(time_delta)
+        # Re-evaluate which scrollbars are needed whenever the scroll area's size changes (i.e. the
+        # window was resized). Cheap no-op when the size is unchanged.
+        sc = getattr(self, "scroll_container", None)
+        if sc is None:
+            return
+        try:
+            size = sc._root_container.rect.size
+        except Exception:
+            return
+        if size != self._last_scroll_root_size:
+            self._last_scroll_root_size = size
+            self._apply_scroll_axes()
 
     def process_event(self, event: pygame.event.Event) -> bool:
         handled = super().process_event(event)
@@ -17805,15 +18663,6 @@ class InfoPanel:
                     'idle_time_s', 'Idle Time (sim s):', 'text', f"{waypoint.get('idle_time_s', 0.0):.1f}"
                 )
             )
-            if self._is_pedestrian_waypoint():
-                specs.append(
-                    InfoPanelFieldSpec(
-                        'turn_time_s',
-                        'Turn Time (sim s):',
-                        'text',
-                        f"{waypoint.get('turn_time_s', 0.0):.1f}",
-                    )
-                )
 
             snap_status = "Snapped" if waypoint.get('snapped', False) else "Normal"
             specs.append(
@@ -17863,17 +18712,6 @@ class InfoPanel:
             )
 
             if self.object_type == 'pedestrian':
-                turn_time = (
-                    self.camera_processor.get_actor_turn_time(actor.id, 0.0)
-                    if self.camera_processor
-                    else 0.0
-                )
-                specs.append(
-                    InfoPanelFieldSpec(
-                        'turn_time_s', 'Turn Time (sim s):', 'text', f"{turn_time:.1f}"
-                    )
-                )
-
                 # Add trigger radius for pedestrians
                 if self.camera_processor and actor.id in self.camera_processor.pedestrian_trigger_radii:
                     trigger_radius = self.camera_processor.pedestrian_trigger_radii[actor.id]
@@ -18115,14 +18953,6 @@ class InfoPanel:
         max_panel_y = max(self.margin, screen_height - self.panel_height - self.margin)
         self.panel_y = max(self.margin, min(panel_top, max_panel_y))
 
-    def _is_pedestrian_waypoint(self):
-        """Determine if the currently selected waypoint belongs to a pedestrian actor."""
-        if not self.camera_processor or self.waypoint_vehicle_id is None:
-            return False
-        if hasattr(self.camera_processor, '_is_pedestrian_actor'):
-            return self.camera_processor._is_pedestrian_actor(self.waypoint_vehicle_id)
-        return False
-    
     def _refresh_fields(self):
         """Refresh field values in real-time during movement/rotation"""
         if not self.visible or not self.selected_object or self.editing:
@@ -18266,9 +19096,6 @@ class InfoPanel:
                     elif self.active_field == 'idle_time_s':
                         if char.isdigit() or char == '.':
                             self._append_char(char)
-                    elif self.active_field == 'turn_time_s':
-                        if char.isdigit() or char == '.':
-                            self._append_char(char)
                     elif self.active_field == 'max_lat_acc':
                         if char.isdigit() or char == '.':
                             self._append_char(char)
@@ -18341,9 +19168,6 @@ class InfoPanel:
             elif self.active_field == 'idle_time_s':
                 new_value = max(0.0, float(self.text_input))
                 self._update_idle_time(new_value)
-            elif self.active_field == 'turn_time_s':
-                new_value = max(0.0, float(self.text_input))
-                self._update_turn_time(new_value)
             elif self.active_field == 'trigger_radius' and self.object_type == 'traffic_light':
                 # Clamp trigger radius to reasonable values (2m - 100m) for traffic lights
                 new_value = max(MIN_PERSONAL_TRIGGER_RADIUS, min(100.0, float(self.text_input)))
@@ -18614,59 +19438,6 @@ class InfoPanel:
                 self.fields['idle_time_s'] = f"{new_idle_time:.1f}"
                 actor_label = 'vehicle' if self.object_type == 'vehicle' else 'pedestrian'
                 print(f"Updated {actor_label} idle time: {old_idle:.1f}s -> {new_idle_time:.1f}s")
-
-    def _update_turn_time(self, new_turn_time):
-        """Update turn time for pedestrian actors or waypoints."""
-        if self.object_type == 'waypoint':
-            waypoint = self.selected_object
-            old_turn = waypoint.get('turn_time_s', 0.0)
-
-            if abs(old_turn - new_turn_time) > 0.01:
-                snapped_state = waypoint.get('snapped', False)
-                command = UpdateWaypointPropertyCommand(
-                    self.camera_processor,
-                    self.waypoint_vehicle_id,
-                    self.waypoint_index,
-                    'turn_time_s',
-                    old_turn,
-                    new_turn_time,
-                    snapped_state,
-                    snapped_state
-                )
-
-                if self.camera_processor and self.camera_processor.editor:
-                    self.camera_processor.editor.execute_command(command)
-                else:
-                    command.execute()
-
-                self.fields['turn_time_s'] = f"{new_turn_time:.1f}"
-                print(f"Updated waypoint turn time: {old_turn:.1f}s -> {new_turn_time:.1f}s")
-
-        elif self.object_type == 'pedestrian':
-            actor = self.selected_object
-            if not actor or not actor.is_alive:
-                return
-
-            old_turn = 1.0
-            if self.camera_processor and hasattr(self.camera_processor, 'actor_turn_times'):
-                old_turn = self.camera_processor.actor_turn_times.get(actor.id, 0.0)
-
-            if abs(old_turn - new_turn_time) > 0.01:
-                command = UpdateVehiclePropertyCommand(
-                    self.camera_processor,
-                    actor.id,
-                    'turn_time_s',
-                    old_turn,
-                    new_turn_time
-                )
-
-                if self.camera_processor and self.camera_processor.editor:
-                    self.camera_processor.editor.execute_command(command)
-                else:
-                    command.execute()
-
-                self.fields['turn_time_s'] = f"{new_turn_time:.1f}"
-                print(f"Updated pedestrian turn time: {old_turn:.1f}s -> {new_turn_time:.1f}s")
 
     def _traffic_light_default_duration(self) -> float:
         return 5.0
@@ -19413,6 +20184,24 @@ class VisualScenarioEditor:
         if self.info_panel.handle_key_input(event):
             return True
 
+        # Keyboard shortcuts help overlay: F1 / H toggles it; Esc closes it while open.
+        # Placed after the info-panel key capture so H is not hijacked while editing a field,
+        # and before the ESCAPE block below so Esc closes the panel instead of stopping a run.
+        # Disabled during playback (along with F11 maximize below) so these keys can't interrupt
+        # a run -- only C changes the view, and only Esc/Stop ends the run.
+        if event.key in (pygame.K_F1, pygame.K_h):
+            if scenario_running:
+                return True  # Help overlay disabled during playback
+            self.keyboard_help_visible = not self.keyboard_help_visible
+            return True
+        if self.keyboard_help_visible and event.key == pygame.K_ESCAPE:
+            self.keyboard_help_visible = False
+            return True
+
+        # Window maximize toggle is disabled during playback so it can't disrupt/end the run.
+        if event.key == pygame.K_F11 and scenario_running:
+            return True  # Maximize disabled during playback
+
         manual_arrow_consumed = False
         if self.camera_processor:
             manual_arrow_consumed = self.camera_processor.handle_manual_control_key(event.key, True)
@@ -19437,6 +20226,12 @@ class VisualScenarioEditor:
             return True
 
         if event.key == pygame.K_ESCAPE:
+            if scenario_running:
+                # While a scenario is playing, ESC always means "stop" -- an alternative to the
+                # Stop button that works even when the UI is hidden in Chase/Cockpit camera modes.
+                print("ESC pressed - stopping scenario")
+                self.stop_scenario()
+                return True
             if self.map_menu_visible:
                 self.map_menu_visible = False
                 print("Map menu closed")
@@ -19446,6 +20241,8 @@ class VisualScenarioEditor:
             elif self.camera_processor and self.camera_processor.creating_waypoint:
                 self.camera_processor.stop_waypoint_creation()
                 print("Waypoint creation cancelled")
+            elif self.camera_processor and self.camera_processor.creating_destination:
+                self.camera_processor.stop_destination_creation()
             elif self.camera_processor and self.camera_processor.placing_trigger:
                 self.camera_processor.stop_trigger_placement()
                 self._reset_right_click_cancel_state()
@@ -19492,6 +20289,19 @@ class VisualScenarioEditor:
                     self.camera_processor._last_visible_traffic_light_trigger_key = None
             return True
 
+        if event.key == pygame.K_c:
+            # Cycle the playback camera top-down -> chase -> cockpit -> top-down. Only while a follow
+            # is active (a run with an ego, external or local) -- it does nothing while plain editing.
+            if self.camera_processor and (
+                self.camera_processor.playback_camera_follow_enabled
+                or self.camera_processor.manual_control_enabled
+            ):
+                mode = self.camera_processor.toggle_playback_camera_mode()
+                # Keep the Play Cam dropdown, persistence, and UI-visibility in sync with C.
+                self._set_play_camera_mode(mode, apply_live=False)
+                print(f"Playback camera mode: {mode}")
+            return True
+
         if event.key == pygame.K_F3 and self.camera_processor:
             self.camera_processor.debug_raycast = not self.camera_processor.debug_raycast
             self.camera_processor.coordinate_detector.debug_raycast = self.camera_processor.debug_raycast
@@ -19502,6 +20312,16 @@ class VisualScenarioEditor:
                 cached = self._safe_get_world_map(refresh=False)
                 map_name = cached.name if cached else "unknown"
                 print(f"[DEBUG MODE] Map: {map_name}\n")
+            return True
+
+        # Match the physical key left of "1" by scancode (KSCAN_GRAVE) so it works on any
+        # keyboard layout -- on non-US layouts (e.g. Estonian) that key is not reported as
+        # K_BACKQUOTE.
+        if (event.key == pygame.K_BACKQUOTE
+                or getattr(event, 'scancode', None) == pygame.KSCAN_GRAVE):
+            self.hide_all_ui = not self.hide_all_ui
+            status = "HIDDEN (pure camera)" if self.hide_all_ui else "VISIBLE"
+            print(f"UI overlays {status} - press ` to toggle")
             return True
 
         if event.key == pygame.K_s and ctrl_pressed:
@@ -19565,7 +20385,7 @@ class VisualScenarioEditor:
         arrow_keys = {pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT}
         manual_active = bool(
             self.camera_processor
-            and (self.camera_processor.manual_control_enabled or self.camera_processor.manual_control_pending)
+            and self.camera_processor.manual_control_armed
         )
         if event.key in release_keys or (event.key in arrow_keys and not manual_active):
             if event.key in self.keys_pressed:
@@ -19587,6 +20407,18 @@ class VisualScenarioEditor:
 
     def _handle_left_click(self, pos, scenario_running):
         """Process left-click (button 1) interactions."""
+        # Shortcuts help overlay: while open it is modal -- the X closes it and every other
+        # click is swallowed so it doesn't fall through to the scene. The "?" button opens it.
+        if self.keyboard_help_visible:
+            if self.help_close_button_rect and self.help_close_button_rect.collidepoint(pos):
+                self.keyboard_help_visible = False
+            return True
+        if self.help_button_rect and self.help_button_rect.collidepoint(pos):
+            if scenario_running:
+                return True  # Help overlay disabled during playback
+            self.keyboard_help_visible = True
+            return True
+
         # Dismiss NPC driving mode dropdown if clicking outside it
         if getattr(self, "npc_dropdown_open", False):
             on_npc_ui = False
@@ -19639,6 +20471,28 @@ class VisualScenarioEditor:
             self.fps_menu_open = False
             return True
 
+        if self.ego_collision_toggle_rect and self.ego_collision_toggle_rect.collidepoint(pos):
+            if not self.ego_physics_enabled:
+                # Collision is locked OFF while Ego Physics is off (physics off implies collision off).
+                self.resolution_menu_open = False
+                self.fps_menu_open = False
+                return True
+            self.ego_collision_enabled = not self.ego_collision_enabled
+            print(f"[Ego] Collision {'enabled' if self.ego_collision_enabled else 'disabled'} (applies on next Play).")
+            self.resolution_menu_open = False
+            self.fps_menu_open = False
+            return True
+
+        if self.ego_physics_toggle_rect and self.ego_physics_toggle_rect.collidepoint(pos):
+            self.ego_physics_enabled = not self.ego_physics_enabled
+            # Couple collision to physics: physics off => collision off; physics on => collision on.
+            self.ego_collision_enabled = self.ego_physics_enabled
+            print(f"[Ego] Physics {'enabled' if self.ego_physics_enabled else 'disabled'} "
+                  f"(collision {'enabled' if self.ego_collision_enabled else 'disabled'}; applies on next Play).")
+            self.resolution_menu_open = False
+            self.fps_menu_open = False
+            return True
+
         if self.connection_button_rect and self.connection_button_rect.collidepoint(pos):
             self.connect_to_remote()
             self.resolution_menu_open = False
@@ -19657,6 +20511,18 @@ class VisualScenarioEditor:
             self.fps_menu_open = False
             return True
 
+        for rect, cam_mode in self.play_camera_option_rects:
+            if rect.collidepoint(pos):
+                self._set_play_camera_mode(cam_mode)
+                self._close_all_dropdowns()
+                return True
+
+        if self.play_camera_button_rect and self.play_camera_button_rect.collidepoint(pos):
+            was_open = self.play_camera_menu_open
+            self._close_all_dropdowns()
+            self.play_camera_menu_open = not was_open
+            return True
+
         for rect, option in self.resolution_option_rects:
             if rect.collidepoint(pos):
                 self._set_stream_resolution(option)
@@ -19667,6 +20533,20 @@ class VisualScenarioEditor:
             was_open = self.resolution_menu_open
             self._close_all_dropdowns()
             self.resolution_menu_open = not was_open
+            return True
+
+        for rect, preset in self._culling_option_rects:
+            if rect.collidepoint(pos):
+                self._set_culling_distance(preset)  # applies, remembers, and closes dropdowns
+                return True
+
+        if self._culling_button_rect and self._culling_button_rect.collidepoint(pos):
+            # Only editable while VSE solely controls the sim and isn't playing; otherwise consume
+            # the click without opening (the button is drawn dimmed in those states).
+            if (not self.scenario_running) and self._culling_apply_safe():
+                was_open = self._culling_menu_open
+                self._close_all_dropdowns()
+                self._culling_menu_open = not was_open
             return True
 
         if self._using_remote_server():
@@ -20061,6 +20941,11 @@ class VisualScenarioEditor:
             and self.camera_processor.creating_waypoint
         )
 
+        cancel_destination = (
+            self.camera_processor
+            and self.camera_processor.creating_destination
+        )
+
         if is_shift_pressed(keys):
             if not in_scene_click or not self.camera_processor:
                 return True
@@ -20072,15 +20957,25 @@ class VisualScenarioEditor:
             self._reset_right_click_cancel_state()
             return True
         else:
-            if cancel_trigger or cancel_waypoint:
+            if cancel_trigger or cancel_waypoint or cancel_destination:
                 self._arm_right_click_cancel(event.pos)
             else:
                 self._reset_right_click_cancel_state()
             self._begin_mouse_pan(event.pos, event.button)
         return True
 
+    def _is_locked_view_camera_active(self) -> bool:
+        """True while the playback camera is in a locked view (chase or cockpit) tied to the ego."""
+        cp = self.camera_processor
+        return bool(cp and getattr(cp, "playback_camera_mode", "topdown") in ("chase", "cockpit"))
+
     def _handle_mouse_button_down(self, event, scenario_running):
         """Dispatch mouse button down events."""
+        # Chase/cockpit lock the view to the ego: disable mouse pan / free-look (middle & right drag,
+        # shift+right click-to-pan) so it can't yank the camera back to a free top-down pan. Top-down
+        # still pans normally; use C to swap modes, and the Stop button (a left-click) still works.
+        if self._is_locked_view_camera_active() and event.button in (2, 3):
+            return True
         if event.button == 1:
             return self._handle_left_click(event.pos, scenario_running)
         if event.button == 2:
@@ -20125,6 +21020,10 @@ class VisualScenarioEditor:
                 if self.camera_processor.creating_waypoint:
                     print("Right click detected - cancelling waypoint creation mode")
                     self.camera_processor.stop_waypoint_creation()
+                # Then check destination placement
+                elif self.camera_processor.creating_destination:
+                    print("Right click detected - cancelling destination placement mode")
+                    self.camera_processor.stop_destination_creation()
                 # Then check global trigger placement
                 elif self.camera_processor.placing_trigger:
                     print("Right click detected - cancelling trigger placement mode")
@@ -20229,6 +21128,10 @@ class VisualScenarioEditor:
             return False
         if self.map_menu_visible and self.map_menu and self.map_menu.handle_scroll(
                 pygame.mouse.get_pos(), event.y):
+            return False
+        # Chase/cockpit lock the view to the ego (the camera is engine-attached). Zooming the free
+        # camera_controller there fights the attach and breaks the view, so only allow zoom in top-down.
+        if self._is_locked_view_camera_active():
             return False
         if self.camera_controller:
             if self.camera_processor:
@@ -20400,7 +21303,45 @@ class VisualScenarioEditor:
             return None
         result = str(result).strip()
         return result or None
-    
+
+    def _ask_use_running_server(self, port: int) -> bool:
+        """Ask whether to connect to an already-running CARLA server.
+
+        Returns True to reuse the running server, False to stop it and start
+        a fresh one. Runs at startup before the main UI loop, so it uses a
+        simple tkinter dialog (with a console fallback) rather than the
+        pygame_gui modals used elsewhere.
+        """
+        message = (
+            f"A CARLA server is already running on port {port}.\n\n"
+            "Connect to it?\n\n"
+            "Yes - connect to the running server (its current map is kept).\n"
+            "No - stop it and start a fresh server."
+        )
+        try:
+            import tkinter
+            from tkinter import messagebox
+            root = tkinter.Tk()
+            root.withdraw()
+            try:
+                root.attributes("-topmost", True)
+            except Exception:
+                pass
+            answer = messagebox.askyesno("CARLA server detected", message)
+            root.destroy()
+            return bool(answer)
+        except Exception as exc:
+            print(f"[Startup] GUI prompt unavailable ({exc}); falling back to console.")
+
+        try:
+            reply = input(
+                f"CARLA server already running on port {port}. Connect to it? [Y/n] "
+            ).strip().lower()
+            return reply in ("", "y", "yes")
+        except Exception:
+            print("[Startup] No interactive console; defaulting to connecting to the running server.")
+            return True
+
     def __init__(self, carla_path=None, port=2000, *, debug: bool = False):
         self.keep_server_running_on_exit = False
         # Initialize Pygame
@@ -20430,6 +21371,9 @@ class VisualScenarioEditor:
         self.remote_fps_max = 20
         self.resolution_menu_open = False
         self.fps_menu_open = False
+        self.play_camera_menu_open = False
+        self.play_camera_button_rect: Optional[pygame.Rect] = None
+        self.play_camera_option_rects: List[Tuple[pygame.Rect, str]] = []
         self.resolution_option_rects: List[Tuple[pygame.Rect, Optional[Tuple[int, int]]]] = []
         self.fps_option_rects: List[Tuple[pygame.Rect, int]] = []
         self._dropdown_draw_ops: List[Tuple[pygame.Rect, Tuple[int, int, int], pygame.Surface]] = []
@@ -20541,6 +21485,13 @@ class VisualScenarioEditor:
         self._rendering_desired_enabled = False
         self.rendering_toggle_rect: Optional[pygame.Rect] = None
         self._rendering_apply_in_progress = False
+        # Ego collision toggle (session-only; read at Play time). On by default = collision enabled.
+        self.ego_collision_enabled = True
+        self.ego_collision_toggle_rect: Optional[pygame.Rect] = None
+        # Ego physics toggle (session-only; read at Play time). On by default = physics enabled.
+        # Untick for external/VIL ego so VSE stops re-enabling CARLA physics (which fights awmini's teleport).
+        self.ego_physics_enabled = True
+        self.ego_physics_toggle_rect: Optional[pygame.Rect] = None
         self._fps_text_rect: Optional[pygame.Rect] = None
         self.large_map_active = False
         try:
@@ -20555,6 +21506,12 @@ class VisualScenarioEditor:
         self.manual_tick_button_rect = None
         self.resolution_button_rect = None
         self.fps_button_rect = None
+        # "Cull" dropdown (WorldSettings.max_culling_distance, metres; 0 = Off). Editor-only;
+        # remembered in settings.json. culling_distance_m is (re)set by _load_culling() below.
+        self.culling_distance_m = self.CULLING_DEFAULT_M
+        self._culling_button_rect: Optional[pygame.Rect] = None
+        self._culling_option_rects: List[Tuple[pygame.Rect, float]] = []
+        self._culling_menu_open = False
         self.open_scenario_button_rect = None
         self.last_map_directory = self._resolve_default_map_directory()
         
@@ -20596,8 +21553,11 @@ class VisualScenarioEditor:
         self.cached_map = None
         self._map_refresh_disabled = False
         self.remote_map_hint = "tartu_demo"
+        self._migrate_legacy_settings()  # fold legacy last_*.json into settings.json (once), before any load
         self._load_last_remote_cache()
         self._load_last_agent_cache()
+        self._load_last_play_camera_cache()
+        self._load_culling()
         if override_profile and override_profile.is_remote:
             self.active_remote_label = override_label or f"{override_profile.host}:{override_profile.port}"
             self.active_remote_port = override_port
@@ -20732,12 +21692,29 @@ class VisualScenarioEditor:
             self.start_screen_active = False
             self._startup_requested = True
         else:
-            self.start_screen_active = True
-            self._startup_requested = False
+            existing_server = False
             try:
-                self.server_manager.kill_existing_carla_processes()
+                existing_server = self.server_manager.check_existing_carla_server(
+                    self.server_manager.port
+                )
             except Exception as exc:
-                print(f"[Startup] Warning: failed to kill existing CARLA processes: {exc}")
+                print(f"[Startup] Warning: failed to probe for existing CARLA server: {exc}")
+
+            if existing_server and self._ask_use_running_server(self.server_manager.port):
+                # User chose to reuse the running server: connect to it as-is
+                # (the start-screen map picker is skipped) and leave it running on exit.
+                print("[Startup] Connecting to already-running CARLA server.")
+                self.start_screen_active = False
+                self._startup_requested = True
+                self.server_manager.use_existing_server = True
+                self.keep_server_running_on_exit = True
+            else:
+                self.start_screen_active = True
+                self._startup_requested = False
+                try:
+                    self.server_manager.kill_existing_carla_processes()
+                except Exception as exc:
+                    print(f"[Startup] Warning: failed to kill existing CARLA processes: {exc}")
         
         # Selection menus
         self.vehicle_menu = VehicleSelectionMenu()
@@ -20780,6 +21757,14 @@ class VisualScenarioEditor:
         # Scenario selection menu
         self.scenario_menu = None  # Will be initialized after world is created
         self.scenario_menu_visible = False
+
+        # Pure-camera view: backtick (`) toggles hiding all overlays/UI in run()
+        self.hide_all_ui = False
+
+        # Keyboard & mouse shortcuts help overlay (F1 / H toggles; ? button opens)
+        self.keyboard_help_visible = False
+        self.help_button_rect = None        # the "?" button hit-rect (set in render_ui)
+        self.help_close_button_rect = None  # the panel's X hit-rect (set when panel drawn)
         self.current_scenario_name = None  # Name of currently loaded scenario
         self.current_scenario_path = None  # Full path to currently loaded scenario JSON
         self.recent_scenarios: List[Dict[str, str]] = []  # Cached recent scenarios (most recent first)
@@ -20837,6 +21822,13 @@ class VisualScenarioEditor:
         self._world_tick_subscription = None
         self._world_last_episode = None
         self._world_last_frame = None
+        # world.id baseline: a reload (e.g. by an external stack) changes world.id. We compare
+        # the live world.id against this baseline to detect externally-initiated world reloads.
+        self._expected_world_id = None
+        # Latest world snapshot, stored by _on_world_tick (O(1), no RPC). Used as a cheap
+        # per-tick signal for external-ego spawn/leave detection (len()/has_actor()).
+        self._latest_world_snapshot = None
+        self._last_seen_actor_count = None
         self._world_reset_lock = threading.Lock()
         self._world_reset_pending = False
         self._world_reset_detected_at = 0.0
@@ -21335,14 +22327,13 @@ class VisualScenarioEditor:
         if current_world is None:
             return
 
+        # carla.Timestamp has no "episode" attribute (CARLA 0.9.15), so the old episode-based
+        # detector never fired. world.id changes whenever the world is reloaded, so we use it
+        # to detect externally-initiated reloads (e.g. by the ROS bridge / an external stack).
         try:
-            snapshot = current_world.get_snapshot()
-            episode = getattr(snapshot.timestamp, "episode", None)
-            frame = snapshot.frame
+            world_id = current_world.id
         except Exception:
-            snapshot = None
-            episode = None
-            frame = None
+            world_id = None
 
         try:
             settings = current_world.get_settings()
@@ -21363,22 +22354,18 @@ class VisualScenarioEditor:
             elif self._world_reset_candidate_world is None and self.world is None:
                 self._world_reset_candidate_world = current_world
 
-            if episode is not None:
-                if self._world_last_episode is None:
-                    self._world_last_episode = episode
-                    self._world_last_frame = frame
-                else:
-                    if episode != self._world_last_episode:
-                        trigger_reset = True
-                    elif (
-                        frame is not None
-                        and self._world_last_frame is not None
-                        and frame < self._world_last_frame
-                    ):
-                        trigger_reset = True
-
-                    self._world_last_episode = episode
-                    self._world_last_frame = frame
+            if world_id is not None:
+                if self._expected_world_id is None:
+                    # First observation: adopt as baseline (no reload to report yet).
+                    self._expected_world_id = world_id
+                elif (
+                    world_id != self._expected_world_id
+                    and not self.pending_map_switch
+                    and not self._world_reset_in_progress
+                ):
+                    # A reload we did not initiate (VSE-initiated swaps set pending_map_switch
+                    # and reboot the process, so they never reach here on a live instance).
+                    trigger_reset = True
 
         if trigger_reset and not self._world_reset_in_progress:
             with self._world_reset_lock:
@@ -21395,6 +22382,15 @@ class VisualScenarioEditor:
         self._unregister_world_tick_handler()
         self._world_tick_times.clear()
         self._world_tick_fps = 0.0
+        # Baseline world.id for the world we are now attached to, so a later externally-initiated
+        # reload (different world.id) is detected. Also reset the per-tick snapshot/actor-count
+        # signals so the first ego that appears in this world counts as a fresh spawn.
+        try:
+            self._expected_world_id = self.world.id
+        except Exception:
+            self._expected_world_id = None
+        self._latest_world_snapshot = None
+        self._last_seen_actor_count = None
         try:
             snapshot = self.world.get_snapshot()
             self._world_last_episode = getattr(snapshot.timestamp, "episode", None)
@@ -21742,16 +22738,8 @@ class VisualScenarioEditor:
             self._large_map_external_ego_had_frames = False
             self._large_map_external_stall_warned = False
 
-        # Enable rendering for external ego (normal maps only, not large maps)
-        if not getattr(self, 'large_map_active', False):
-            try:
-                self._apply_rendering_mode(
-                    desired_enabled=True,
-                    reason="external ego connected",
-                    force=False
-                )
-            except Exception as exc:
-                print(f"[External Ego] Warning: failed to enable rendering: {exc}")
+        # Rendering mode is left untouched on external ego connect: no-rendering
+        # stays on by default and only the user can toggle it via the UI.
 
         print(f"[External Ego] External ego {actor.id} registered (placeholder preserved).")
         return True
@@ -21886,9 +22874,7 @@ class VisualScenarioEditor:
             actor.id,
             speed=speed_val if speed_val is not None else 40.0,
             destination_speed=dest_speed,
-            idle_time=0.0,
-            turn_time=0.0,
-            color=color_value,
+            idle_time=0.0,            color=color_value,
             ignore_flags=ignore_flags or {},
             max_lat_acc=max_lat_acc if max_lat_acc is not None else 3.0,
         )
@@ -22023,16 +23009,8 @@ class VisualScenarioEditor:
             print("[External Ego] Detected external ego disconnect; clearing references (placeholder preserved).")
         except Exception:
             pass
-        # Disable rendering when external ego disconnects (normal maps only)
-        if not getattr(self, 'large_map_active', False):
-            try:
-                self._apply_rendering_mode(
-                    desired_enabled=False,
-                    reason="external ego disconnected",
-                    force=False
-                )
-            except Exception as exc:
-                print(f"[External Ego] Warning: failed to disable rendering: {exc}")
+        # Rendering mode is left untouched on external ego disconnect: it stays
+        # whatever the user last set via the UI (no-rendering on by default).
         self._external_swap_active = False
         self._external_swap_current_id = None
         self.external_ego_actor = None
@@ -22074,17 +23052,60 @@ class VisualScenarioEditor:
         actor = self._refresh_external_ego_actor_reference()
         currently_present = actor is not None
         now = time.time()
+
+        # Authoritative liveness re-check for a believed-present external ego.
+        # _refresh_external_ego_actor_reference()'s cheap fast path trusts the local
+        # actor.is_alive flag whenever the tick snapshot is unavailable (None) or stale -- which
+        # it can be while idle in async mode, or once an external bridge (e.g. awmini) stops
+        # feeding ticks. In that state a removal is never noticed: currently_present stays True,
+        # the disconnect branch below never runs (no log line, and Play stays enabled in custom
+        # mode).
+        #
+        # Re-confirm with the SAME full get_actors() role scan that the Play path uses
+        # (_prepare_external_ego_for_playback -> _resolve_external_ego_actor(force_scan=True) ->
+        # _detect_external_ego_vehicle). A targeted world.get_actor(id) is NOT used here: the
+        # editor's long-lived client adopted the ego earlier, so get_actor(id) can hand back a
+        # client-side cached actor proxy that still reports is_alive=True for an id the server has
+        # already destroyed -- which masks the removal. The full scan reflects server truth, which
+        # is why pressing Play already detects "no external ego" while the toolbar stays stale.
+        if (
+            currently_present
+            and self.external_ego_actor_id is not None
+            and (now - self._last_external_ego_scan_time) >= 3.0
+        ):
+            rescanned = self._detect_external_ego_vehicle(silent=True)
+            actor = rescanned
+            currently_present = rescanned is not None
+
+        # Cheap, no-RPC spawn signal: the latest tick snapshot gives the actor count for free.
+        # Only run the heavier get_actors() role scan when the population grew (something
+        # spawned) or on a slow fallback. This works in async too (no dependency on sync mode /
+        # manual_tick), so any stack that spawns a role_name ego is detected -- with or without
+        # a world reload -- without continuous polling overhead.
+        snap = self._latest_world_snapshot
+        try:
+            actor_count = len(snap) if snap is not None else None
+        except Exception:
+            actor_count = None
+        population_increased = (
+            actor_count is not None
+            and self._last_seen_actor_count is not None
+            and actor_count > self._last_seen_actor_count
+        )
+        if actor_count is not None:
+            self._last_seen_actor_count = actor_count
+
+        fallback_due = (now - self._last_external_ego_scan_time) >= 3.0
         perform_scan = (
             not currently_present
             and not self.scenario_running
-            and self.manual_tick_required
-            and (now - self._last_external_ego_scan_time) >= 1.0
+            and (population_increased or fallback_due)
         )
 
         # Debug: log scan conditions during bootstrap
         if getattr(self, '_large_map_bootstrap_ticking', False) and not getattr(self, '_bootstrap_scan_debug_done', False):
             print(f"[Bootstrap DEBUG] Scan conditions: currently_present={currently_present}, scenario_running={self.scenario_running}, "
-                  f"manual_tick_required={self.manual_tick_required}, time_since_scan={(now - self._last_external_ego_scan_time):.1f}s")
+                  f"actor_count={actor_count}, population_increased={population_increased}, fallback_due={fallback_due}")
             if perform_scan:
                 print("[Bootstrap DEBUG] Will perform external ego scan")
 
@@ -22218,18 +23239,26 @@ class VisualScenarioEditor:
 
         camera = getattr(self, "camera_processor", None)
         last_required = getattr(self, "_manual_tick_last_required_time", 0.0)
+        # Liveness heartbeat: treat the world as alive if EITHER a recent camera frame OR
+        # a recent world tick was seen. World ticks (world.on_tick -> _on_world_tick) fire
+        # at simulation rate regardless of how slowly the scene renders, so on large/tiled
+        # maps -- where camera frames lag badly -- the tick keeps us from misreading slow
+        # rendering as a frozen simulation and falsely swapping back from an external ego.
+        # Small maps are unaffected (ticks fire there too).
+        last_frame_time = getattr(camera, "last_frame_time", 0.0) if camera is not None else 0.0
+        last_world_tick = self._world_tick_times[-1] if self._world_tick_times else 0.0
+        last_alive = max(last_frame_time or 0.0, last_world_tick or 0.0)
         if (
             self.manual_tick_required
             and not self.manual_tick_enabled
-            and camera is not None
-            and getattr(camera, "last_frame_time", None)
+            and last_alive
             and last_required
         ):
-            frame_age = now - camera.last_frame_time
+            frame_age = now - last_alive
             sync_age = now - last_required
             if frame_age >= 4.0 and sync_age >= 1.0:
                 switched = self._switch_world_to_async_if_safe(
-                    reason="no frames received in synchronous mode",
+                    reason="no frames or world ticks in synchronous mode",
                     force=True,
                 )
                 if not switched:
@@ -22299,36 +23328,12 @@ class VisualScenarioEditor:
         except Exception:
             pass
 
-        try:
-            episode = getattr(snapshot.timestamp, "episode", None)
-            frame = snapshot.frame
-        except Exception:
-            episode = None
-            frame = None
-
-        with self._world_reset_lock:
-            if self._world_reset_in_progress:
-                self._world_last_episode = episode
-                self._world_last_frame = frame
-                return
-
-            if self._world_last_episode is None:
-                self._world_last_episode = episode
-                self._world_last_frame = frame
-                return
-
-            reset_detected = False
-            if episode is not None and self._world_last_episode is not None and episode != self._world_last_episode:
-                reset_detected = True
-            elif frame is not None and self._world_last_frame is not None and frame < self._world_last_frame:
-                reset_detected = True
-
-            if reset_detected and not self._world_reset_pending:
-                self._world_reset_pending = True
-                self._world_reset_detected_at = time.time()
-
-            self._world_last_episode = episode
-            self._world_last_frame = frame
+        # Store the latest snapshot (O(1), no RPC). This is the cheap per-tick signal used by
+        # external-ego spawn/leave detection in _monitor_external_ego_status (len()/has_actor()).
+        # World-reset detection itself is handled by the polled world.id check in
+        # _check_world_replacement; the old episode/frame trigger here was dead (carla.Timestamp
+        # has no "episode" attribute in CARLA 0.9.15) and is intentionally removed.
+        self._latest_world_snapshot = snapshot
 
     def _process_world_reset_events(self):
         """Main-thread handler to process pending world reset workflow."""
@@ -22422,6 +23427,11 @@ class VisualScenarioEditor:
         self._external_swap_last_blueprint = None
         self._external_swap_last_color = None
         self._external_ego_prompt_pending_id = None
+        # Clear "was present" / "already reloaded" state so the post-recovery scan starts clean:
+        # avoids a spurious external-ego disconnect right after the world reload, and lets the
+        # fresh ego (which appears after the reload) re-trigger scenario adoption.
+        self._external_ego_present_last_check = False
+        self._external_ego_scenario_reloaded = False
 
     def _wait_for_world_recovery(self):
         """Background thread: wait until CARLA world becomes available again."""
@@ -22493,6 +23503,8 @@ class VisualScenarioEditor:
             force=True,
             world=new_world,
         )
+        # Reapply culling distance to the fresh world (or adopt its live value if unsafe).
+        self._apply_culling(world=new_world, force=True, reason="world reset recovery")
 
         restored_camera_state = getattr(self, "_camera_restore_state", None)
         if self.camera_controller:
@@ -22527,6 +23539,8 @@ class VisualScenarioEditor:
                 self.pedestrian_menu.set_camera_processor(self.camera_processor)
             if self.ego_vehicle_menu:
                 self.ego_vehicle_menu.set_camera_processor(self.camera_processor)
+            if getattr(self, "traffic_light_group_menu", None):
+                self.traffic_light_group_menu.set_camera_processor(self.camera_processor)
             if not self.camera_stream_enabled:
                 self._apply_stream_settings()
             self.camera_processor._server_host = self.connection_profile.host if self.connection_profile else '127.0.0.1'
@@ -22746,12 +23760,6 @@ class VisualScenarioEditor:
         else:
             print("Nothing to redo")
             return False
-        
-    def get_undo_status(self):
-        """Get status of undo/redo stacks for UI display"""
-        undo_count = len(self.undo_stack)
-        redo_count = len(self.redo_stack)
-        return f"Undo: {undo_count}/{self.max_undo_history}, Redo: {redo_count}"
 
     def _refresh_active_info_panel(self):
         """Refresh the info panel after history mutations to reflect live state."""
@@ -22783,6 +23791,27 @@ class VisualScenarioEditor:
             print(f"Warning: Failed to resolve ego roles from scenario data: {exc}")
         return roles
 
+    def _scenario_ego_type(self):
+        """Return the ego vehicle blueprint/type from the current scenario JSON, or None.
+
+        Used only as a non-gating confirmation that the expected ego vehicle spawned; role_name
+        remains the sole adoption trigger, so a different vehicle is still adopted (with a warn).
+        """
+        try:
+            if self.current_scenario_path and os.path.isfile(self.current_scenario_path):
+                with open(self.current_scenario_path, "r", encoding="utf-8") as handle:
+                    data = json.load(handle)
+                ego_record = data.get("ego_vehicle")
+                if isinstance(ego_record, list):
+                    ego_record = ego_record[0] if ego_record else None
+                if isinstance(ego_record, dict):
+                    ego_type = ego_record.get("type")
+                    if isinstance(ego_type, str) and ego_type.strip():
+                        return ego_type.strip()
+        except Exception as exc:
+            print(f"Warning: Failed to resolve ego type from scenario data: {exc}")
+        return None
+
     def _get_current_world(self):
         """Return the most up-to-date CARLA world reference available to the editor."""
         if self.client:
@@ -22796,12 +23825,25 @@ class VisualScenarioEditor:
 
     def _refresh_external_ego_actor_reference(self):
         """Ensure cached external ego actor reference is alive and update it if needed."""
-        if self.external_ego_actor and self.external_ego_actor.is_alive:
-            return self.external_ego_actor
-
         if self.external_ego_actor_id is None:
             self.external_ego_actor = None
             return None
+
+        # Server-truth liveness via the latest tick snapshot (free, no RPC). actor.is_alive is a
+        # local flag and does NOT notice an actor destroyed by another client (e.g. awmini
+        # closing), so we consult the snapshot. has_actor() False -> skip the fast path and fall
+        # through to the get_actor() RPC, which confirms and releases the reference. has_actor()
+        # True/None -> keep the cheap is_alive fast path (no RPC in steady state).
+        snap = self._latest_world_snapshot
+        snapshot_has_ego = None
+        if snap is not None:
+            try:
+                snapshot_has_ego = snap.has_actor(self.external_ego_actor_id)
+            except Exception:
+                snapshot_has_ego = None
+
+        if snapshot_has_ego is not False and self.external_ego_actor and self.external_ego_actor.is_alive:
+            return self.external_ego_actor
 
         world = self._get_current_world()
         if not world:
@@ -22896,6 +23938,25 @@ class VisualScenarioEditor:
                                     f"Detected candidate external ego vehicle {actor.id} "
                                     f"({actor.type_id}) with role '{role_name}'"
                                 )
+
+                        # Non-gating "name" confirmation: role_name above is the sole adoption
+                        # trigger; here we only log whether the spawned vehicle matches the
+                        # scenario's expected ego type. A mismatch warns but never blocks
+                        # adoption (another self-driving stack may use a different vehicle).
+                        if (not silent) or (previous_id != actor.id):
+                            expected_type = self._scenario_ego_type()
+                            if expected_type:
+                                if actor.type_id == expected_type:
+                                    print(
+                                        f"[Ego Detection] Confirmed external ego type "
+                                        f"'{actor.type_id}' matches scenario ego type."
+                                    )
+                                else:
+                                    print(
+                                        f"[Ego Detection] Note: external ego type "
+                                        f"'{actor.type_id}' differs from scenario ego type "
+                                        f"'{expected_type}'; adopting by role '{role_name}' anyway."
+                                    )
 
                         # Handle automatic scenario reload for new external ego connection
                         if (
@@ -23288,6 +24349,13 @@ class VisualScenarioEditor:
         text = str(payload.get("text", "") or "")
         default_path = payload.get("path")
 
+        # The result dialog is set_blocking(True), so once it opens it swallows all input. It must
+        # therefore be visible. If the run was stopped from Chase/Cockpit (which auto-hides the UI),
+        # hide_all_ui is True and the per-frame ui_manager.draw_ui() is skipped -> the dialog would
+        # be invisible AND eat every keystroke (including ` to un-hide), freezing the app. Force the
+        # UI back on so the dialog is shown and closable, matching a Top-Down (Stop button) stop.
+        self.hide_all_ui = False
+
         rect_width = max(640, int(self.screen_width * 0.6))
         rect_height = max(420, int(self.screen_height * 0.6))
         dialog_rect = self._center_dialog_rect(rect_width, rect_height)
@@ -23300,6 +24368,22 @@ class VisualScenarioEditor:
             on_save=lambda: self._save_result_text(text, default_path if isinstance(default_path, str) else None),
             on_close=self._close_result_window,
         )
+
+    def _reap_finished_runner(self):
+        """Clear the MiniRunner handle once its thread (and ROS-agent subprocess) is fully gone.
+
+        on_finish fires from MiniRunner._cleanup *before* _stop_ros_agent_process(), so the
+        runner thread is still alive (and the subprocess still shutting down) when the results
+        appear. We keep self._mini_runner set until that thread dies — which only happens after
+        _cleanup completes — so the Play button stays disabled ("Finishing…") until a new run is
+        safe to start. This is the moment the subprocess is guaranteed dead.
+        """
+        runner = getattr(self, "_mini_runner", None)
+        if not runner or self.scenario_running:
+            return
+        thread = getattr(runner, "_thread", None)
+        if not thread or not thread.is_alive():
+            self._mini_runner = None
 
     def _capture_playback_preserved_state(
         self,
@@ -23480,7 +24564,9 @@ class VisualScenarioEditor:
                     f"with role '{role_name}'; scenario will attach to it."
                 )
                 try:
-                    external_actor.set_simulate_physics(True)
+                    # Honor the Ego Physics toggle: don't force physics on an externally-controlled
+                    # (e.g. awmini VIL) ego, which disables physics and drives by teleport.
+                    external_actor.set_simulate_physics(self.ego_physics_enabled)
                 except Exception:
                     pass
             else:
@@ -23564,10 +24650,19 @@ class VisualScenarioEditor:
             self.info_panel.hide()
         # Always enable manual control for local ego (camera follows regardless of route)
         should_enable_manual_control = scenario_has_ego and not external_ego_present
+        starting_ego_camera = False
         if self.camera_processor and should_enable_manual_control:
             self.camera_processor.request_manual_control()
+            self.camera_processor.playback_camera_mode = self.play_camera_mode
+            starting_ego_camera = True
         elif self.camera_processor and scenario_has_ego and external_ego_present:
             self.camera_processor.request_playback_camera_follow()
+            self.camera_processor.playback_camera_mode = self.play_camera_mode
+            starting_ego_camera = True
+        if starting_ego_camera:
+            # Auto-hide the overlays for Chase/Cockpit; keep them for Top-Down. The `~` key
+            # toggles `hide_all_ui` manually afterwards. See _set_play_camera_mode().
+            self.hide_all_ui = (self.play_camera_mode != "topdown")
 
         # Hide overlays during playback for a clean viewing experience
         if self.camera_processor:
@@ -23667,6 +24762,15 @@ class VisualScenarioEditor:
 
             external_ego_present, external_ego_identified = self._prepare_external_ego_for_playback(scenario_has_ego)
 
+            # Arm manual-control arrow routing as early as the run mode is known, before the slow
+            # startup work below (vehicle relocation, marker recording). This keeps arrow keys
+            # reserved for the ego instead of leaking to the camera during the startup window.
+            if self.camera_processor:
+                self.camera_processor.manual_control_armed = scenario_has_ego and not external_ego_present
+                if self.camera_processor.manual_control_armed:
+                    for _arrow in (pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT):
+                        self.keys_pressed.discard(_arrow)
+
             # Record start markers before relocating vehicles so UI can display placeholders
             self._record_scenario_start_markers()
 
@@ -23763,7 +24867,12 @@ class VisualScenarioEditor:
                 self._restore_start_weather_from_presets()
                 self.scenario_running = False
                 self.scenario_stop_requested = False
-                self._mini_runner = None
+                # NOTE: do NOT clear self._mini_runner here. on_finish fires from
+                # MiniRunner._cleanup *before* _stop_ros_agent_process() tears down the
+                # ROS-agent subprocess, and the runner thread is still alive at this point.
+                # Keep the handle so the Play button stays disabled ("Finishing…") until the
+                # thread (and thus the subprocess) is fully torn down; _reap_finished_runner()
+                # clears it once self._mini_runner._thread is no longer alive.
                 self._debug_camera_pose("post-run restore")
                 if self.camera_processor:
                     try:
@@ -23829,6 +24938,8 @@ class VisualScenarioEditor:
                 agent_mode=ego_agent_mode,
                 agent_behavior=ego_agent_behavior,
                 vehicle_control_mode=self.vehicle_control_mode,
+                disable_ego_collision=not self.ego_collision_enabled,
+                disable_ego_physics=not self.ego_physics_enabled,
             )
             _play_diag("run_scenario: MiniRunner init OK")
             _play_diag("run_scenario: MiniRunner start()")
@@ -24533,7 +25644,8 @@ class VisualScenarioEditor:
                         ego_actor.set_transform(placeholder_tf)
                         ego_actor.set_target_velocity(carla.Vector3D())
                         ego_actor.set_target_angular_velocity(carla.Vector3D())
-                        ego_actor.set_simulate_physics(True)
+                        # Honor the Ego Physics toggle (see _prepare_external_ego_for_playback).
+                        ego_actor.set_simulate_physics(self.ego_physics_enabled)
                         print(f"[External Ego] Teleported to placeholder position for scenario start.")
                     except Exception as exc:
                         print(f"[External Ego] Failed to teleport to placeholder position: {exc}")
@@ -24789,9 +25901,23 @@ class VisualScenarioEditor:
         self._restore_in_progress = True
         focus_attempted = False
 
+        # Capture the live camera zoom (height) NOW, before the scene reload below resets the
+        # controller to (0,0,0). This is the zoom the user had when Stop was pressed; it is
+        # reapplied after the reload so the camera stays at the Stop-time zoom (not the Play-time one).
+        try:
+            self._restore_camera_height = (
+                float(self.camera_controller.height) if self.camera_controller else None
+            )
+        except Exception:
+            self._restore_camera_height = None
+
         # Pre-position the camera near the last known ego to avoid visible jumps from the manual-control follow offset.
         try:
             if self._auto_camera_allowed() and self.camera_controller and self.camera_processor:
+                # Reapply the Stop-time zoom captured just above (preserves the user's current zoom).
+                saved_height = getattr(self, "_restore_camera_height", None)
+                if saved_height is not None:
+                    self.camera_controller.height = saved_height
                 ego_tf = getattr(self.camera_processor, "ego_vehicle_transform", None)
                 if ego_tf:
                     self.camera_controller.center_x = ego_tf.location.x
@@ -24808,6 +25934,12 @@ class VisualScenarioEditor:
                 return
             focus_attempted = True
             try:
+                # The scene reload above resets the camera controller to (0,0,0). Reapply the
+                # Stop-time zoom captured at the start of restore so focus only needs to recenter
+                # on the ego (focus_camera_on_location preserves height); otherwise it stays at h=0.
+                saved_height = getattr(self, "_restore_camera_height", None)
+                if saved_height is not None and self.camera_controller is not None:
+                    self.camera_controller.height = saved_height
                 self._focus_camera_on_ego_vehicle()
             except Exception:
                 pass
@@ -25221,10 +26353,6 @@ class VisualScenarioEditor:
         return False
 
 
-    def _get_last_remote_cache_path(self) -> Path:
-        """Return the cache path for storing the last remote host/port."""
-        return self._get_vse_cache_dir() / 'last_remote.json'
-
     def _get_vse_cache_dir(self) -> Path:
         """Return the base cache directory for VSE."""
         cache_base = os.environ.get('XDG_CACHE_HOME')
@@ -25232,50 +26360,111 @@ class VisualScenarioEditor:
             cache_base = os.path.join(Path.home(), '.cache')
         return Path(cache_base) / 'vse'
 
-    def _load_last_remote_cache(self) -> None:
-        """Load cached remote host/port if available."""
-        self.last_remote_host: Optional[str] = None
-        self.last_remote_port: Optional[str] = None
-        cache_path = self._get_last_remote_cache_path()
-        if not cache_path.is_file():
-            return
+    # Legacy per-feature cache files, folded into settings.json on first launch (then removed).
+    _LEGACY_SETTINGS_FILES = {
+        'remote': 'last_remote.json',
+        'agent': 'last_agent.json',
+        'scenario': 'last_scenario.json',
+        'play_camera': 'last_play_camera.json',
+    }
+
+    def _get_settings_path(self) -> Path:
+        """Return the unified VSE settings file (replaces the per-feature last_*.json caches)."""
+        return self._get_vse_cache_dir() / 'settings.json'
+
+    def _load_settings(self) -> Dict[str, Any]:
+        """Read the unified settings file as a dict (empty on missing/corrupt; unlink if corrupt)."""
+        settings_path = self._get_settings_path()
+        if not settings_path.is_file():
+            return {}
         try:
-            data = json.loads(cache_path.read_text())
-            if isinstance(data, dict):
-                host = data.get('host')
-                port = data.get('port')
-                if host:
-                    self.last_remote_host = str(host)
-                if port is not None and str(port).strip():
-                    self.last_remote_port = str(port)
+            data = json.loads(settings_path.read_text())
+            return data if isinstance(data, dict) else {}
         except Exception as exc:
-            print(f"[Remote Cache] Failed to load last remote entry: {exc}")
+            print(f"[Settings] Failed to load {settings_path.name}: {exc}")
             try:
-                cache_path.unlink()
+                settings_path.unlink()
+            except Exception:
+                pass
+            return {}
+
+    def _read_settings_section(self, key: str) -> Dict[str, Any]:
+        """Return a copy of one dict section of the unified settings file ({} if absent/non-dict)."""
+        section = self._load_settings().get(key)
+        return dict(section) if isinstance(section, dict) else {}
+
+    def _write_settings_section(self, key: str, payload: Any) -> None:
+        """Merge one section into the unified settings file (atomic temp-file + os.replace)."""
+        settings_path = self._get_settings_path()
+        try:
+            settings_path.parent.mkdir(parents=True, exist_ok=True)
+            data = self._load_settings()
+            data[key] = payload
+            data['updated'] = time.time()
+            tmp_path = settings_path.with_name(settings_path.name + '.tmp')
+            tmp_path.write_text(json.dumps(data, indent=2))
+            os.replace(str(tmp_path), str(settings_path))
+        except Exception as exc:
+            print(f"[Settings] Failed to write section '{key}': {exc}")
+
+    def _migrate_legacy_settings(self) -> None:
+        """One-time fold of the legacy per-feature cache files into settings.json, then remove them.
+
+        Runs before any _load_*_cache() in __init__. Copies each legacy file's raw JSON under its
+        section key (the section loaders already normalize the shapes), writes settings.json, and
+        deletes the legacy files. No-op once settings.json exists.
+        """
+        settings_path = self._get_settings_path()
+        if settings_path.is_file():
+            return  # already migrated
+        cache_dir = self._get_vse_cache_dir()
+        migrated: Dict[str, Any] = {}
+        for key, filename in self._LEGACY_SETTINGS_FILES.items():
+            legacy_path = cache_dir / filename
+            if not legacy_path.is_file():
+                continue
+            try:
+                migrated[key] = json.loads(legacy_path.read_text())
+            except Exception:
+                continue
+        if migrated:
+            try:
+                settings_path.parent.mkdir(parents=True, exist_ok=True)
+                migrated['updated'] = time.time()
+                settings_path.write_text(json.dumps(migrated, indent=2))
+            except Exception as exc:
+                print(f"[Settings] Migration write failed: {exc}")
+                return
+        for filename in self._LEGACY_SETTINGS_FILES.values():
+            try:
+                (cache_dir / filename).unlink()
             except Exception:
                 pass
 
+    def _load_last_remote_cache(self) -> None:
+        """Load cached remote host/port from the unified settings file."""
+        self.last_remote_host: Optional[str] = None
+        self.last_remote_port: Optional[str] = None
+        data = self._read_settings_section('remote')
+        host = data.get('host')
+        port = data.get('port')
+        if host:
+            self.last_remote_host = str(host)
+        if port is not None and str(port).strip():
+            self.last_remote_port = str(port)
+
     def _remember_last_remote(self, host: str, port: Union[str, int, None]) -> None:
         """Persist the most recent remote host/port selection."""
-        cache_path = self._get_last_remote_cache_path()
-        try:
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            payload = {
-                'host': host or '',
-                'port': str(port) if port is not None else '',
-            }
-            cache_path.write_text(json.dumps(payload))
-            self.last_remote_host = payload['host']
-            self.last_remote_port = payload['port']
-        except Exception as exc:
-            print(f"[Remote Cache] Failed to write last remote entry: {exc}")
-
-    def _get_last_agent_cache_path(self) -> Path:
-        """Return the cache path for storing the last selected playback agent."""
-        return self._get_vse_cache_dir() / 'last_agent.json'
+        payload = {
+            'host': host or '',
+            'port': str(port) if port is not None else '',
+        }
+        self._write_settings_section('remote', payload)
+        self.last_remote_host = payload['host']
+        self.last_remote_port = payload['port']
 
     def _load_last_agent_cache(self) -> None:
-        """Load cached playback agent path, mode, and behavior if available."""
+        """Load cached playback agent path, mode, and behavior from the unified settings file."""
         self.agent_path: Optional[str] = None
         self.agent_mode: str = "autopilot"       # "autopilot" | "human" | "custom"
         self.agent_behavior: str = "normal"       # "cautious" | "normal" | "aggressive"
@@ -25284,18 +26473,10 @@ class VisualScenarioEditor:
             self._behavior_agent_path: str = _ba_mod.__file__
         except Exception:
             self._behavior_agent_path = "agents/navigation/behavior_agent.py"
-        cache_path = self._get_last_agent_cache_path()
-        if not cache_path.is_file():
-            return
-        try:
-            data = json.loads(cache_path.read_text())
-            path = data.get('path') if isinstance(data, dict) else None
-            mode = data.get('mode') if isinstance(data, dict) else None
-            behavior = data.get('behavior') if isinstance(data, dict) else None
-        except Exception:
-            path = None
-            mode = None
-            behavior = None
+        data = self._read_settings_section('agent')
+        path = data.get('path')
+        mode = data.get('mode')
+        behavior = data.get('behavior')
         if mode in ("autopilot", "human", "custom"):
             self.agent_mode = mode
         if behavior in ("cautious", "normal", "aggressive"):
@@ -25312,75 +26493,53 @@ class VisualScenarioEditor:
         """Persist the most recently used playback agent path, mode, and behavior."""
         if agent_path and os.path.isfile(agent_path):
             self.agent_path = os.path.abspath(agent_path)
-        cache_path = self._get_last_agent_cache_path()
-        try:
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            payload: Dict[str, Any] = {
-                'mode': self.agent_mode,
-                'behavior': self.agent_behavior,
-                'updated': time.time(),
-            }
-            if self.agent_path:
-                payload['path'] = self.agent_path
-                payload['directory'] = os.path.dirname(self.agent_path)
-            else:
-                # Preserve last-used directory for the file picker
-                existing_dir = self._get_last_agent_directory()
-                if existing_dir:
-                    payload['directory'] = existing_dir
-            cache_path.write_text(json.dumps(payload))
-        except Exception:
-            pass
+        payload: Dict[str, Any] = {
+            'mode': self.agent_mode,
+            'behavior': self.agent_behavior,
+            'updated': time.time(),
+        }
+        if self.agent_path:
+            payload['path'] = self.agent_path
+            payload['directory'] = os.path.dirname(self.agent_path)
+        else:
+            # Preserve last-used directory for the file picker
+            existing_dir = self._get_last_agent_directory()
+            if existing_dir:
+                payload['directory'] = existing_dir
+        self._write_settings_section('agent', payload)
 
     def _clear_last_agent_cache(self, *, remove_file: bool = False) -> None:
         """Clear cached playback agent path but preserve directory, mode, and behavior."""
         self.agent_path = None
         if remove_file:
-            cache_path = self._get_last_agent_cache_path()
-            try:
-                existing_dir = None
-                if cache_path.is_file():
-                    data = json.loads(cache_path.read_text())
-                    existing_dir = data.get('directory') or (
-                        os.path.dirname(data.get('path', '')) if data.get('path') else None
-                    )
-                payload: Dict[str, Any] = {
-                    'mode': self.agent_mode,
-                    'behavior': self.agent_behavior,
-                }
-                if existing_dir and os.path.isdir(existing_dir):
-                    payload['directory'] = existing_dir
-                cache_path.write_text(json.dumps(payload))
-            except Exception:
-                pass
+            existing = self._read_settings_section('agent')
+            existing_dir = existing.get('directory') or (
+                os.path.dirname(existing.get('path', '')) if existing.get('path') else None
+            )
+            payload: Dict[str, Any] = {
+                'mode': self.agent_mode,
+                'behavior': self.agent_behavior,
+            }
+            if existing_dir and os.path.isdir(existing_dir):
+                payload['directory'] = existing_dir
+            self._write_settings_section('agent', payload)
 
     def _get_last_agent_directory(self) -> Optional[str]:
-        """Return the last used agent directory from cache, if available."""
-        cache_path = self._get_last_agent_cache_path()
-        if not cache_path.is_file():
-            return None
-        try:
-            data = json.loads(cache_path.read_text())
-            directory = data.get('directory')
-            if not directory and data.get('path'):
-                directory = os.path.dirname(data['path'])
-            if directory and os.path.isdir(directory):
-                return directory
-        except Exception:
-            pass
+        """Return the last used agent directory from the unified settings file, if available."""
+        data = self._read_settings_section('agent')
+        directory = data.get('directory')
+        if not directory and data.get('path'):
+            directory = os.path.dirname(data['path'])
+        if directory and os.path.isdir(directory):
+            return directory
         return None
 
-    def _get_last_scenario_cache_path(self) -> Path:
-        """Return the cache path for storing the recent scenario reference."""
-        return self._get_vse_cache_dir() / 'last_scenario.json'
-
     def _load_last_scenario_cache(self) -> None:
-        """Load cached recent scenario reference from disk if available."""
-        cache_path = self._get_last_scenario_cache_path()
-        if not cache_path.is_file():
+        """Load cached recent scenario reference from the unified settings file if available."""
+        data = self._load_settings().get('scenario')
+        if data is None:
             return
         try:
-            data = json.loads(cache_path.read_text())
             entries_raw = []
             if isinstance(data, dict) and 'recent' in data:
                 entries_raw = data.get('recent', [])
@@ -25423,33 +26582,27 @@ class VisualScenarioEditor:
             self._clear_last_scenario_cache(remove_file=True)
 
     def _remember_last_scenario(self, file_path: str, scenario_name: Optional[str], scenario_map: Optional[str]) -> None:
-        """Update in-memory and on-disk cache of the most recent scenarios (max 3)."""
+        """Update in-memory and the unified settings file with the most recent scenarios (max 3)."""
         if not file_path or not os.path.isfile(file_path):
             return
         name = scenario_name or os.path.basename(file_path)
         norm_path = os.path.abspath(file_path)
         map_name = scenario_map or 'Unknown'
-        cache_path = self._get_last_scenario_cache_path()
-        try:
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            existing = [entry for entry in self.recent_scenarios if entry.get('path') != norm_path]
-            recent = [{
-                'path': norm_path,
-                'name': name,
-                'map_name': map_name,
-                'exists': True,
-                'updated': time.time(),
-            }] + existing
-            recent = recent[:3]
-            cache_payload = {'recent': recent}
-            cache_path.write_text(json.dumps(cache_payload))
-            self.recent_scenarios = recent
-            first = recent[0]
-            self.last_scenario_path = first['path']
-            self.last_scenario_name = first['name']
-            self.last_scenario_map = first.get('map_name')
-        except Exception as exc:
-            print(f"[Recent Scenario] Failed to write cache: {exc}")
+        existing = [entry for entry in self.recent_scenarios if entry.get('path') != norm_path]
+        recent = [{
+            'path': norm_path,
+            'name': name,
+            'map_name': map_name,
+            'exists': True,
+            'updated': time.time(),
+        }] + existing
+        recent = recent[:3]
+        self._write_settings_section('scenario', {'recent': recent})
+        self.recent_scenarios = recent
+        first = recent[0]
+        self.last_scenario_path = first['path']
+        self.last_scenario_name = first['name']
+        self.last_scenario_map = first.get('map_name')
 
     def _clear_last_scenario_cache(self, *, remove_file: bool = False) -> None:
         """Clear recent scenario references."""
@@ -25458,13 +26611,143 @@ class VisualScenarioEditor:
         self.last_scenario_name = None
         self.last_scenario_map = None
         if remove_file:
-            cache_path = self._get_last_scenario_cache_path()
+            self._write_settings_section('scenario', {'recent': []})
+
+    # Playback camera modes the Play Cam dropdown / persistence accept.
+    PLAY_CAMERA_MODES = ("topdown", "chase", "cockpit")
+
+    def _load_last_play_camera_cache(self) -> None:
+        """Load the remembered play camera mode; default to 'chase' if missing/invalid."""
+        self.play_camera_mode: str = "chase"
+        data = self._read_settings_section('play_camera')
+        mode = data.get('mode')
+        if mode in self.PLAY_CAMERA_MODES:
+            self.play_camera_mode = mode
+
+    def _remember_last_play_camera(self) -> None:
+        """Persist the current play camera mode selection."""
+        self._write_settings_section('play_camera', {
+            'mode': self.play_camera_mode,
+            'updated': time.time(),
+        })
+
+    # Culling distance presets (metres) for the "Cull" dropdown; 0.0 = Off (engine default).
+    CULLING_PRESETS = (0.0, 100.0, 200.0, 300.0, 400.0, 500.0, 600.0, 700.0, 800.0, 900.0, 1000.0)
+    # Out-of-box default when nothing is remembered (no `culling` section) and no env/CLI override: Off.
+    CULLING_DEFAULT_M = 0.0
+
+    def _load_culling(self) -> None:
+        """Load the remembered culling distance (metres; 0 = Off) into self.culling_distance_m.
+
+        Precedence: --no-culling/VSE_CULLING=0 -> Off; explicit --cull-distance/VSE_CULL_DISTANCE;
+        else the remembered value; else CULLING_DEFAULT_M (Off when no `culling` section exists yet).
+        """
+        if os.environ.get('VSE_CULLING') == '0':
+            self.culling_distance_m = 0.0
+            return
+        env_dist = os.environ.get('VSE_CULL_DISTANCE')
+        if env_dist is not None:
             try:
-                cache_path.unlink()
-            except FileNotFoundError:
+                self.culling_distance_m = max(0.0, float(env_dist))
+                return
+            except ValueError:
                 pass
+        dist = self._read_settings_section('culling').get('distance_m')
+        try:
+            self.culling_distance_m = max(0.0, float(dist)) if dist is not None else self.CULLING_DEFAULT_M
+        except (TypeError, ValueError):
+            self.culling_distance_m = self.CULLING_DEFAULT_M
+
+    def _remember_last_culling(self) -> None:
+        """Persist the current culling distance selection."""
+        self._write_settings_section('culling', {
+            'distance_m': self.culling_distance_m,
+            'updated': time.time(),
+        })
+
+    @property
+    def culling_enabled(self) -> bool:
+        """True when culling is on (distance > 0). Gates the spectator-follow re-add for local ego."""
+        return self.culling_distance_m > 0
+
+    def _culling_apply_safe(self) -> bool:
+        """False when changing world settings is unsafe: on large maps or while an external
+        bridge/ego owns the sim, apply_settings() can crash the server (see
+        _switch_world_to_async_if_safe). Culling is only editable while VSE solely controls the world.
+        """
+        if getattr(self, "large_map_active", False):
+            return False
+        if (getattr(self, "external_ego_actor", None) is not None
+                or getattr(self, "external_ego_actor_id", None) is not None
+                or getattr(self, "_external_swap_active", False)):
+            return False
+        return True
+
+    def _apply_culling(self, *, world=None, force: bool = False, reason: str = "") -> bool:
+        """Push self.culling_distance_m to WorldSettings.max_culling_distance (metres -> cm; 0 = off).
+
+        When applying is unsafe (large map / external bridge), do NOT touch settings - instead adopt
+        the live value into culling_distance_m so the dimmed dropdown reflects reality. Returns True
+        when the world matches the desired value afterwards.
+        """
+        target_world = world or self.world
+        if not target_world:
+            return False
+        if not self._culling_apply_safe():
+            try:
+                live = getattr(target_world.get_settings(), "max_culling_distance", 0.0)
+                self.culling_distance_m = max(0.0, float(live) / 100.0)
             except Exception:
                 pass
+            return False
+        try:
+            settings = target_world.get_settings()
+        except Exception as exc:
+            print(f"[Culling] Unable to read world settings: {exc}")
+            return False
+        target_cm = self.culling_distance_m * 100.0
+        current_cm = float(getattr(settings, "max_culling_distance", 0.0) or 0.0)
+        if not force and abs(current_cm - target_cm) < 1e-6:
+            return True
+        try:
+            settings.max_culling_distance = target_cm
+            target_world.apply_settings(settings)
+            label = "Off" if self.culling_distance_m <= 0 else f"{self.culling_distance_m:.0f} m"
+            suffix = f" ({reason})" if reason else ""
+            print(f"[Culling] Max draw distance set to {label}{suffix}.")
+        except Exception as exc:
+            print(f"[Culling] Failed to set max_culling_distance: {exc}")
+            return False
+        return True
+
+    def _set_culling_distance(self, meters: float) -> None:
+        """Set the culling distance (metres; 0 = Off), apply it live, remember it, close dropdowns."""
+        self.culling_distance_m = max(0.0, float(meters))
+        self._apply_culling(force=True, reason="user")
+        self._remember_last_culling()
+        self._close_all_dropdowns()
+
+    def _set_play_camera_mode(self, mode: str, *, persist: bool = True, apply_live: bool = True) -> None:
+        """Set the play camera preference, optionally persist it, and (when a run is active)
+        apply the live camera + UI-visibility rule.
+
+        UI visibility only changes while a playback run is active (camera follow or manual
+        control): Top-Down always shows the overlays; Chase/Cockpit auto-hide them for a clean
+        view. The backtick/`~` key still toggles `hide_all_ui` manually afterwards.
+        """
+        if mode not in self.PLAY_CAMERA_MODES:
+            return
+        self.play_camera_mode = mode
+        if persist:
+            self._remember_last_play_camera()
+        run_active = bool(self.camera_processor and (
+            self.camera_processor.playback_camera_follow_enabled
+            or self.camera_processor.manual_control_enabled
+        ))
+        if run_active:
+            self.hide_all_ui = (mode != "topdown")
+            if apply_live:
+                self.camera_processor.set_playback_camera_mode(mode)
 
     def _load_scenario_from_path(self, file_path: str, *, prompt_unsaved: bool = True) -> bool:
         """Load a scenario from a concrete file path with map handling."""
@@ -26546,6 +27829,14 @@ class VisualScenarioEditor:
 
             self.loading_stage = "Waiting for remote map..."
             self.world = self.client.get_world()
+            # This is a VSE-initiated, in-process reload (no process reboot), so re-baseline
+            # world.id here; otherwise the new world.id would look like an external reset.
+            try:
+                self._expected_world_id = self.world.id
+            except Exception:
+                self._expected_world_id = None
+            self._latest_world_snapshot = None
+            self._last_seen_actor_count = None
             is_sync = False
             try:
                 settings_probe = self.world.get_settings()
@@ -27366,6 +28657,8 @@ class VisualScenarioEditor:
                     desired_enabled=self._rendering_desired_enabled,
                     reason="initial configuration",
                 )
+                # Apply the remembered culling distance (or adopt the live value if unsafe).
+                self._apply_culling(reason="initial configuration")
 
                 if profile.is_remote and settings is not None:
                     if getattr(settings, 'synchronous_mode', False):
@@ -27396,13 +28689,21 @@ class VisualScenarioEditor:
                 self.camera_controller = TopDownCamera(center_x, center_y, 200)
                 self.camera_controller.world = self.world  # Set world reference for debug raycast
 
-                # Stage 7: Position spectator at world origin
-                spectator = self.world.get_spectator()
-                spectator_transform = carla.Transform(
-                    carla.Location(x=0, y=0, z=200),
-                    carla.Rotation(pitch=-90, yaw=0, roll=0)  # Looking down
+                # Stage 7: Position spectator (only when VSE started a fresh local
+                # server). When connecting to an already-running server (local reuse
+                # or remote), leave the spectator wherever it is.
+                started_fresh_server = (
+                    profile.manage_server and not self.server_manager.use_existing_server
                 )
-                spectator.set_transform(spectator_transform)
+                if started_fresh_server:
+                    spectator = self.world.get_spectator()
+                    spectator_transform = carla.Transform(
+                        carla.Location(x=10000, y=10000, z=-10000),
+                        carla.Rotation(pitch=-90, yaw=0, roll=0)  # Looking down
+                    )
+                    spectator.set_transform(spectator_transform)
+                else:
+                    print("[Startup] Connected to existing server; leaving spectator camera untouched.")
 
                 # Stage 8: Now safe to spawn camera sensor and do raycasting
                 self.loading_stage = "Setting up camera sensor..."
@@ -27703,11 +29004,11 @@ class VisualScenarioEditor:
         for key in self.key_hold_times:
             self.key_hold_times[key] += dt
 
-        if self.camera_controller:
+        if self.camera_controller and not self._is_locked_view_camera_active():
             navigation_height = self.camera_controller.get_navigation_height()
             height_scale = navigation_height / 400.0
             base_keyboard_speed = 30.0 * height_scale
-            arrow_allowed = not (self.camera_processor and (self.camera_processor.manual_control_enabled or self.camera_processor.manual_control_pending))
+            arrow_allowed = not (self.camera_processor and self.camera_processor.manual_control_armed)
             up_pressed = pygame.K_UP in self.keys_pressed if arrow_allowed else False
             down_pressed = pygame.K_DOWN in self.keys_pressed if arrow_allowed else False
             left_pressed = pygame.K_LEFT in self.keys_pressed if arrow_allowed else False
@@ -28033,6 +29334,168 @@ class VisualScenarioEditor:
             trimmed = trimmed[:-1]
         return f"{trimmed}{ellipsis}" if trimmed else ellipsis
 
+    def _draw_keycap(self, surface, label, left, center_y, font):
+        """Draw a single keyboard 'keycap' box with a centered gold label. Returns its rect."""
+        text_surf = font.render(label, True, (255, 215, 0))
+        pad_x = 8
+        h = 24
+        w = max(h, text_surf.get_width() + 2 * pad_x)
+        rect = pygame.Rect(int(left), int(center_y - h / 2), int(w), h)
+        pygame.draw.rect(surface, (70, 70, 70), rect, border_radius=4)
+        pygame.draw.rect(surface, (150, 150, 150), rect, 1, border_radius=4)
+        # Lighter top edge for a subtle 3D keycap feel
+        pygame.draw.line(surface, (115, 115, 115), (rect.left + 3, rect.top + 1), (rect.right - 3, rect.top + 1), 1)
+        surface.blit(text_surf, text_surf.get_rect(center=rect.center))
+        return rect
+
+    def _draw_mouse_glyph(self, surface, left, center_y, highlight=None):
+        """Draw a small mouse icon. `highlight` in {'left','right','middle','wheel'} lights that part."""
+        w, h = 16, 24
+        rect = pygame.Rect(int(left), int(center_y - h / 2), w, h)
+        accent = (100, 200, 255)
+        outline = (150, 150, 150)
+        cx = rect.centerx
+        mid_y = rect.top + h // 2
+        pygame.draw.rect(surface, (60, 60, 60), rect, border_radius=7)
+        if highlight == 'left':
+            pygame.draw.rect(surface, accent, (rect.left + 1, rect.top + 1, cx - rect.left - 1, mid_y - rect.top - 1),
+                             border_top_left_radius=6)
+        elif highlight == 'right':
+            pygame.draw.rect(surface, accent, (cx, rect.top + 1, rect.right - cx - 1, mid_y - rect.top - 1),
+                             border_top_right_radius=6)
+        pygame.draw.rect(surface, outline, rect, 1, border_radius=7)
+        pygame.draw.line(surface, outline, (rect.left + 1, mid_y), (rect.right - 1, mid_y), 1)
+        pygame.draw.line(surface, outline, (cx, rect.top + 2), (cx, mid_y), 1)
+        wheel = pygame.Rect(0, 0, 4, 7)
+        wheel.center = (cx, rect.top + 7)
+        pygame.draw.rect(surface, accent if highlight in ('wheel', 'middle') else outline, wheel, border_radius=2)
+        return rect
+
+    def _draw_key_combo(self, surface, tokens, left, center_y, font):
+        """Render a sequence of keycap/mouse/separator tokens left-to-right. Returns total width."""
+        x = left
+        gap = 4
+        for tok in tokens:
+            kind = tok[0]
+            if kind == 'cap':
+                x = self._draw_keycap(surface, tok[1], x, center_y, font).right + gap
+            elif kind == 'mouse':
+                x = self._draw_mouse_glyph(surface, x, center_y, tok[1] if len(tok) > 1 else None).right + gap
+            else:  # 'plus' or 'sep' -- plain connective text
+                label = '+' if kind == 'plus' else tok[1]
+                ts = font.render(label, True, (200, 200, 200))
+                surface.blit(ts, ts.get_rect(midleft=(x, center_y)))
+                x += ts.get_width() + gap
+        return x - left
+
+    def render_keyboard_help_overlay(self, screen):
+        """Draw the centered 'Keyboard & Mouse Shortcuts' modal. Geometry is recomputed each frame
+        from the current window size so it stays centered when the window is resized."""
+        def cap(s):
+            return ('cap', s)
+        def mouse(b):
+            return ('mouse', b)
+        def sep(s):
+            return ('sep', s)
+        plus = ('plus',)
+
+        col_a = [
+            ('header', 'CAMERA & VIEW'),
+            ('row', [cap('WASD'), sep('/'), cap('Arrows')], 'Pan camera'),
+            ('row', [mouse('right'), sep('/'), mouse('middle'), sep('drag')], 'Pan camera'),
+            ('row', [mouse('wheel')], 'Zoom in / out'),
+            ('row', [cap('Shift'), plus, mouse('right')], 'Jump camera to cursor'),
+            ('row', [cap('C')], 'Cycle play camera (during a run)'),
+            ('header', 'PLACEMENT & EDIT'),
+            ('row', [cap('Ctrl'), plus, mouse('left')], 'Spawn actor (snap to lane)'),
+            ('row', [cap('Ctrl'), plus, cap('Shift'), plus, mouse('left')], 'Spawn actor (free, no snap)'),
+            ('row', [cap('Shift'), plus, sep('drag')], 'Move / place without snap'),
+            ('row', [cap('Ctrl'), plus, mouse('left')], 'Split waypoint (on a waypoint)'),
+            ('row', [cap('Delete')], 'Delete selected'),
+            ('header', 'FILE & HISTORY'),
+            ('row', [cap('Ctrl'), plus, cap('S')], 'Save scenario'),
+            ('row', [cap('Ctrl'), plus, cap('L')], 'Load scenario'),
+            ('row', [cap('Ctrl'), plus, cap('Z')], 'Undo'),
+            ('row', [cap('Ctrl'), plus, cap('Y')], 'Redo (or Ctrl+Shift+Z)'),
+        ]
+        col_b = [
+            ('header', 'OVERLAYS & TOGGLES'),
+            ('row', [cap('O')], 'Toggle OpenDRIVE lanes'),
+            ('row', [cap('T')], 'Toggle traffic-light stop lines'),
+            ('row', [cap('`')], 'Hide / show all UI (key left of 1)'),
+            ('header', 'PLAYBACK & EXIT'),
+            ('row', [cap('Esc')], 'Stop run / cancel / clear selection'),
+            ('row', [cap('Alt'), plus, cap('F4')], 'Exit'),
+            ('header', 'MANUAL EGO (playback, no route)'),
+            ('row', [cap('Up'), sep('/'), cap('Down')], 'Accelerate / brake (hold Down = reverse)'),
+            ('row', [cap('Left'), sep('/'), cap('Right')], 'Steer'),
+            ('row', [cap('Space')], 'Handbrake'),
+            ('row', [cap('Q'), sep('/'), cap('P')], 'Reverse / autopilot'),
+            ('header', 'HELP'),
+            ('row', [cap('F1'), sep('/'), cap('H')], 'Toggle this panel'),
+        ]
+
+        sw, sh = self.screen_width, self.screen_height
+        panel_w = min(900, sw - 60)
+        panel_h = min(600, sh - 40)
+        panel_x = (sw - panel_w) // 2
+        panel_y = (sh - panel_h) // 2
+
+        # Dim the scene behind the modal
+        shade = pygame.Surface((sw, sh), pygame.SRCALPHA)
+        shade.fill((0, 0, 0, 160))
+        screen.blit(shade, (0, 0))
+
+        # Panel background (translucent dark) + border, matching the tooltip palette
+        panel_surface = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+        panel_surface.fill((50, 50, 50, 235))
+        screen.blit(panel_surface, (panel_x, panel_y))
+        panel_rect = pygame.Rect(panel_x, panel_y, panel_w, panel_h)
+        pygame.draw.rect(screen, (150, 150, 150), panel_rect, 2)
+
+        # Title
+        title = self.font.render("Keyboard & Mouse Shortcuts", True, (255, 255, 255))
+        screen.blit(title, (panel_x + 22, panel_y + 16))
+
+        # Close button (X) -- top-right of the panel
+        cb = pygame.Rect(panel_x + panel_w - 36, panel_y + 14, 22, 22)
+        self.help_close_button_rect = cb
+        mouse_pos = pygame.mouse.get_pos()
+        cb_hover = cb.collidepoint(mouse_pos)
+        pygame.draw.rect(screen, (90, 60, 60) if cb_hover else (70, 70, 70), cb, border_radius=4)
+        pygame.draw.rect(screen, (180, 180, 180), cb, 1, border_radius=4)
+        x_color = (255, 140, 140) if cb_hover else (220, 220, 220)
+        pygame.draw.line(screen, x_color, (cb.left + 6, cb.top + 6), (cb.right - 6, cb.bottom - 6), 2)
+        pygame.draw.line(screen, x_color, (cb.right - 6, cb.top + 6), (cb.left + 6, cb.bottom - 6), 2)
+
+        # Two columns of categorized rows
+        row_h = 26
+        header_gap = 10
+        key_col_w = 158
+        columns = [(panel_x + 24, col_a), (panel_x + panel_w // 2 + 14, col_b)]
+        body_top = panel_y + 56
+        for col_x, items in columns:
+            y = body_top
+            first_header = True
+            for item in items:
+                if item[0] == 'header':
+                    if not first_header:
+                        y += header_gap
+                    first_header = False
+                    hs = self.small_font.render(item[1], True, (120, 200, 255))
+                    screen.blit(hs, (col_x, y + (row_h - hs.get_height()) // 2))
+                    y += row_h
+                else:
+                    _, tokens, desc = item
+                    self._draw_key_combo(screen, tokens, col_x + 4, y + row_h // 2, self.small_font)
+                    ds = self.small_font.render(desc, True, (210, 210, 210))
+                    screen.blit(ds, ds.get_rect(midleft=(col_x + key_col_w, y + row_h // 2)))
+                    y += row_h
+
+        # Footer hint
+        footer = self.small_font.render("Press  F1 / H  or click  ✕  to close", True, (180, 180, 180))
+        screen.blit(footer, footer.get_rect(center=(panel_x + panel_w // 2, panel_y + panel_h - 20)))
+
     def render_ui(self):
         """Render UI elements overlay"""
         # Semi-transparent background for UI (smaller height)
@@ -28047,10 +29510,14 @@ class VisualScenarioEditor:
         self.gpu_button_rect = None
         self.resolution_button_rect = None
         self.fps_button_rect = None
+        self._culling_button_rect = None
         self.agent_button_rect = None
         self.agent_button_enabled = False
         self.resolution_option_rects = []
         self.fps_option_rects = []
+        self._culling_option_rects = []
+        self.play_camera_button_rect = None
+        self.play_camera_option_rects = []
         dropdown_draw_ops: List[Tuple[pygame.Rect, Tuple[int, int, int], pygame.Surface]] = []
         row_y = 10
         button_height = 30
@@ -28086,27 +29553,43 @@ class VisualScenarioEditor:
 
         next_x = map_button_rect.right + button_spacing
 
-        # Connection toggle button (Local/Remote)
-        is_remote = bool(self.connection_profile and self.connection_profile.is_remote)
-        connection_label = "Remote" if is_remote else "Local"
-        connection_label_surface = self.small_font.render(connection_label, True, self.colors['text'])
-        connection_button_width = max(110, connection_label_surface.get_width() + 24)
-        connection_rect = pygame.Rect(next_x, row_y, connection_button_width, button_height)
-        is_connection_hovered = connection_rect.collidepoint(mouse_pos)
-        if is_remote:
-            connection_color = (150, 110, 60) if is_connection_hovered else (125, 90, 45)
-        else:
-            connection_color = (70, 140, 80) if is_connection_hovered else (55, 110, 60)
+        # Play Cam selector (playback camera: Top-Down / Chase / Cockpit)
+        play_camera_labels = {"topdown": "Top-Down", "chase": "Chase", "cockpit": "Cockpit"}
+        play_camera_label = "Play Cam: " + play_camera_labels.get(self.play_camera_mode, "Chase")
+        play_camera_surface = self.small_font.render(play_camera_label, True, self.colors['text'])
+        play_camera_button_width = max(150, play_camera_surface.get_width() + 24)
+        play_camera_rect = pygame.Rect(next_x, row_y, play_camera_button_width, button_height)
+        is_play_camera_hovered = play_camera_rect.collidepoint(mouse_pos)
+        play_camera_color = (140, 110, 190) if is_play_camera_hovered else (110, 80, 160)
 
-        pygame.draw.rect(self.screen, connection_color, connection_rect, border_radius=6)
-        pygame.draw.rect(self.screen, self.colors['text'], connection_rect, 1, border_radius=6)
-        connection_label_rect = connection_label_surface.get_rect(center=connection_rect.center)
-        self.screen.blit(connection_label_surface, connection_label_rect)
-        self.connection_button_rect = connection_rect
-        if is_connection_hovered and self.tooltip_manager:
-            self.tooltip_manager.register_hover("connection_button", connection_rect, TOP_UI_BUTTON_TOOLTIPS.get('connection', ''))
+        pygame.draw.rect(self.screen, play_camera_color, play_camera_rect, border_radius=6)
+        pygame.draw.rect(self.screen, self.colors['text'], play_camera_rect, 1, border_radius=6)
+        play_camera_label_rect = play_camera_surface.get_rect(center=play_camera_rect.center)
+        self.screen.blit(play_camera_surface, play_camera_label_rect)
+        self.play_camera_button_rect = play_camera_rect
+        if is_play_camera_hovered and self.tooltip_manager:
+            self.tooltip_manager.register_hover("play_camera_button", play_camera_rect, TOP_UI_BUTTON_TOOLTIPS.get('play_camera', ''))
+        next_x = play_camera_rect.right + button_spacing
 
-        next_x = connection_rect.right + button_spacing
+        if self.play_camera_menu_open:
+            option_height = button_height
+            menu_top = play_camera_rect.bottom + 2
+            for idx, opt_mode in enumerate(("topdown", "chase", "cockpit")):
+                option_rect = pygame.Rect(
+                    play_camera_rect.left,
+                    menu_top + idx * option_height,
+                    play_camera_button_width,
+                    option_height,
+                )
+                is_selected = opt_mode == self.play_camera_mode
+                is_hovered = option_rect.collidepoint(mouse_pos)
+                if is_selected:
+                    draw_color = (150, 120, 200)
+                else:
+                    draw_color = (130, 100, 180) if is_hovered else (95, 70, 140)
+                option_surface = self.small_font.render(play_camera_labels[opt_mode], True, self.colors['text'])
+                self.play_camera_option_rects.append((option_rect, opt_mode))
+                dropdown_draw_ops.append((option_rect, draw_color, option_surface))
 
         self.gpu_button_rect = None
 
@@ -28162,6 +29645,51 @@ class VisualScenarioEditor:
                 self.resolution_option_rects.append((option_rect, option))
                 dropdown_draw_ops.append((option_rect, draw_color, option_surface))
 
+        # Culling distance selector (right after Resolution). Editor-only: dimmed during play or while
+        # an external bridge/large map owns the sim, where apply_settings() is unsafe.
+        cull_editable = (not self.scenario_running) and self._culling_apply_safe()
+        if not cull_editable:
+            self._culling_menu_open = False
+        cull_label = "Cull: Off" if self.culling_distance_m <= 0 else f"Cull: {int(self.culling_distance_m)} m"
+        cull_surface = self.small_font.render(cull_label, True, self.colors['text'])
+        cull_button_width = max(120, cull_surface.get_width() + 24)
+        cull_rect = pygame.Rect(next_x, row_y, cull_button_width, button_height)
+        is_cull_hovered = cull_editable and cull_rect.collidepoint(mouse_pos)
+        if not cull_editable:
+            cull_color = (60, 60, 60)
+        elif is_cull_hovered:
+            cull_color = (110, 110, 110)
+        else:
+            cull_color = (85, 85, 85)
+        pygame.draw.rect(self.screen, cull_color, cull_rect, border_radius=6)
+        pygame.draw.rect(self.screen, self.colors['text'], cull_rect, 1, border_radius=6)
+        cull_label_rect = cull_surface.get_rect(center=cull_rect.center)
+        self.screen.blit(cull_surface, cull_label_rect)
+        self._culling_button_rect = cull_rect
+        if is_cull_hovered and self.tooltip_manager:
+            self.tooltip_manager.register_hover("culling_button", cull_rect, TOP_UI_BUTTON_TOOLTIPS.get('culling', ''))
+        next_x = cull_rect.right + button_spacing
+
+        if cull_editable and self._culling_menu_open:
+            option_height = button_height
+            menu_top = cull_rect.bottom + 2
+            for idx, preset in enumerate(self.CULLING_PRESETS):
+                option_rect = pygame.Rect(
+                    cull_rect.left,
+                    menu_top + idx * option_height,
+                    cull_button_width,
+                    option_height,
+                )
+                is_selected = abs(preset - self.culling_distance_m) < 1e-6
+                is_hovered = option_rect.collidepoint(mouse_pos)
+                base_color = (110, 110, 110) if is_hovered else (70, 70, 70)
+                selected_color = (140, 140, 140)
+                draw_color = selected_color if is_selected else base_color
+                option_label = "Off" if preset <= 0 else f"{int(preset)} m"
+                option_surface = self.small_font.render(option_label, True, self.colors['text'])
+                self._culling_option_rects.append((option_rect, preset))
+                dropdown_draw_ops.append((option_rect, draw_color, option_surface))
+
         # FPS selector (remote only)
         if self._using_remote_server():
             fps_label = f"{self.stream_fps} FPS"
@@ -28203,36 +29731,69 @@ class VisualScenarioEditor:
             self.fps_option_rects = []
             self.fps_menu_open = False
 
-        # Drive Clock toggle (always visible, last in the row)
-        manual_label = "Drive Clock: ON" if self.manual_tick_enabled else "Drive Clock: OFF"
-        manual_label_surface = self.small_font.render(manual_label, True, self.colors['text'])
-        manual_button_width = max(170, manual_label_surface.get_width() + 24)
-        manual_rect = pygame.Rect(next_x, row_y, manual_button_width, button_height)
-        is_manual_hovered = manual_rect.collidepoint(mouse_pos)
-        if self.manual_tick_enabled:
-            manual_color = (70, 160, 80) if is_manual_hovered else (50, 130, 60)
+        # Connection toggle button (Local/Remote)
+        is_remote = bool(self.connection_profile and self.connection_profile.is_remote)
+        connection_label = "Remote" if is_remote else "Local"
+        connection_label_surface = self.small_font.render(connection_label, True, self.colors['text'])
+        connection_button_width = max(110, connection_label_surface.get_width() + 24)
+        connection_rect = pygame.Rect(next_x, row_y, connection_button_width, button_height)
+        is_connection_hovered = connection_rect.collidepoint(mouse_pos)
+        if is_remote:
+            connection_color = (150, 110, 60) if is_connection_hovered else (125, 90, 45)
         else:
-            manual_color = (150, 100, 40) if is_manual_hovered else (120, 80, 30)
+            connection_color = (70, 140, 80) if is_connection_hovered else (55, 110, 60)
 
-        pygame.draw.rect(self.screen, manual_color, manual_rect, border_radius=6)
-        pygame.draw.rect(self.screen, self.colors['text'], manual_rect, 1, border_radius=6)
-        manual_label_rect = manual_label_surface.get_rect(center=manual_rect.center)
-        self.screen.blit(manual_label_surface, manual_label_rect)
-        if is_manual_hovered and self.tooltip_manager:
-            self.tooltip_manager.register_hover("manual_tick_button", manual_rect, TOP_UI_BUTTON_TOOLTIPS.get('manual_tick', ''))
+        pygame.draw.rect(self.screen, connection_color, connection_rect, border_radius=6)
+        pygame.draw.rect(self.screen, self.colors['text'], connection_rect, 1, border_radius=6)
+        connection_label_rect = connection_label_surface.get_rect(center=connection_rect.center)
+        self.screen.blit(connection_label_surface, connection_label_rect)
+        self.connection_button_rect = connection_rect
+        if is_connection_hovered and self.tooltip_manager:
+            self.tooltip_manager.register_hover("connection_button", connection_rect, TOP_UI_BUTTON_TOOLTIPS.get('connection', ''))
 
-        if self.manual_tick_required and self.manual_tick_recommendation and not self.manual_tick_enabled:
-            tip_text = "Enable Drive Clock for live RGB"
-            tip_surface = self.small_font.render(tip_text, True, (230, 200, 120))
-            tip_rect = tip_surface.get_rect()
-            tip_rect.left = manual_rect.right + 8
-            tip_rect.centery = manual_rect.centery
-            self.screen.blit(tip_surface, tip_rect)
+        next_x = connection_rect.right + button_spacing
 
-        self.manual_tick_button_rect = manual_rect
-        next_x = manual_rect.right + button_spacing
+        # Drive Clock toggle (remote server only, last in the row).
+        # On managed/local servers VSE drives sync/async automatically, so the
+        # manual control is hidden; it only appears for remote servers VSE does
+        # not own, where switching modes is the operator's call.
+        if self._using_remote_server():
+            manual_label = "Drive Clock: ON" if self.manual_tick_enabled else "Drive Clock: OFF"
+            manual_label_surface = self.small_font.render(manual_label, True, self.colors['text'])
+            manual_button_width = max(170, manual_label_surface.get_width() + 24)
+            manual_rect = pygame.Rect(next_x, row_y, manual_button_width, button_height)
+            is_manual_hovered = manual_rect.collidepoint(mouse_pos)
+            if self.manual_tick_enabled:
+                manual_color = (70, 160, 80) if is_manual_hovered else (50, 130, 60)
+            else:
+                manual_color = (150, 100, 40) if is_manual_hovered else (120, 80, 30)
+
+            pygame.draw.rect(self.screen, manual_color, manual_rect, border_radius=6)
+            pygame.draw.rect(self.screen, self.colors['text'], manual_rect, 1, border_radius=6)
+            manual_label_rect = manual_label_surface.get_rect(center=manual_rect.center)
+            self.screen.blit(manual_label_surface, manual_label_rect)
+            if is_manual_hovered and self.tooltip_manager:
+                self.tooltip_manager.register_hover("manual_tick_button", manual_rect, TOP_UI_BUTTON_TOOLTIPS.get('manual_tick', ''))
+
+            if self.manual_tick_required and self.manual_tick_recommendation and not self.manual_tick_enabled:
+                tip_text = "Enable Drive Clock for live RGB"
+                tip_surface = self.small_font.render(tip_text, True, (230, 200, 120))
+                tip_rect = tip_surface.get_rect()
+                tip_rect.left = manual_rect.right + 8
+                tip_rect.centery = manual_rect.centery
+                self.screen.blit(tip_surface, tip_rect)
+
+            self.manual_tick_button_rect = manual_rect
+            next_x = manual_rect.right + button_spacing
+        else:
+            # Hidden on local/managed servers; clear the rect so clicks are inert.
+            self.manual_tick_button_rect = None
 
         capture_rects: List[pygame.Rect] = []
+        if self.play_camera_menu_open:
+            if self.play_camera_button_rect:
+                capture_rects.append(self.play_camera_button_rect)
+            capture_rects.extend(rect for rect, _ in self.play_camera_option_rects)
         if self.resolution_menu_open:
             if self.resolution_button_rect:
                 capture_rects.append(self.resolution_button_rect)
@@ -28479,11 +30040,23 @@ class VisualScenarioEditor:
                 dropdown_draw_ops.append((item_rect, draw_color, option_surface))
 
 
+        # A just-finished run can still be tearing down in the background (ROS-agent subprocess
+        # cancel/terminate/kill happens after results appear). The runner thread stays alive until
+        # that teardown completes, so gate Play on it: don't let a new run start until it's gone.
+        _runner = getattr(self, "_mini_runner", None)
+        _runner_thread = getattr(_runner, "_thread", None)
+        runner_busy = bool(_runner and not scenario_active and _runner_thread and _runner_thread.is_alive())
+
         # Determine button state and appearance
         if scenario_active:
             play_button_text = "Stop"
             play_button_color = (170, 80, 80) if is_play_hovered else (140, 60, 60)  # Red for stop
             play_button_enabled = True
+        elif runner_busy:
+            # Previous run still shutting down (subprocess teardown); block Play until done.
+            play_button_text = "Finishing…"
+            play_button_color = (80, 80, 80)  # Gray, disabled
+            play_button_enabled = False
         elif scenario_ready:
             custom_blocked = (agent_mode == "custom" and not getattr(self, '_external_ego_present_last_check', False))
             if custom_blocked:
@@ -28518,12 +30091,29 @@ class VisualScenarioEditor:
                 self.tooltip_manager.register_hover("play_button", play_button_rect, TOP_UI_BUTTON_TOOLTIPS.get(tooltip_key, ''))
 
 
-        # 3. Movement legend (centered slightly higher for spacing)
-        controls = "WASD: Pan | Right/Middle Click+Drag: Pan | Wheel: Zoom | Shift+Right Click: Move Camera | Ctrl+Click: Spawn | O: Toggle Lanes | T: Toggle Stop Lines | Ctrl+S: Save | Ctrl+L: Load"
+        # 3. Help hint (centered slightly higher for spacing). The full controls/shortcuts
+        #    list lives in the F1/H keyboard-help overlay; the "?" button (below) opens it too.
+        controls = "Press F1 or H for help"
         controls_surface = self.small_font.render(controls, True, (200, 200, 200))
         controls_center_y = ui_height - 35
         controls_rect = controls_surface.get_rect(center=(self.screen_width // 2, controls_center_y))
         self.screen.blit(controls_surface, controls_rect)
+
+        # "?" help button just right of the help hint -- opens the shortcuts panel.
+        # Lives in render_ui, so it auto-hides with the rest of the UI under hide_all_ui.
+        help_btn_d = 22
+        help_btn_cx = min(controls_rect.right + 18, self.screen_width - help_btn_d // 2 - 6)
+        help_btn_rect = pygame.Rect(0, 0, help_btn_d, help_btn_d)
+        help_btn_rect.center = (help_btn_cx, controls_center_y)
+        self.help_button_rect = help_btn_rect
+        hb_hover = help_btn_rect.collidepoint(pygame.mouse.get_pos())
+        pygame.draw.circle(self.screen, (70, 70, 70), help_btn_rect.center, help_btn_d // 2)
+        pygame.draw.circle(self.screen, (255, 215, 0) if hb_hover else (150, 150, 150),
+                           help_btn_rect.center, help_btn_d // 2, 1)
+        q_surf = self.small_font.render("?", True, (255, 215, 0) if hb_hover else (210, 210, 210))
+        self.screen.blit(q_surf, q_surf.get_rect(center=help_btn_rect.center))
+        if hb_hover and self.tooltip_manager:
+            self.tooltip_manager.register_hover("help_button", help_btn_rect, "Keyboard shortcuts (F1 / H)")
 
         manual_message = None
         if self.camera_processor:
@@ -28538,19 +30128,10 @@ class VisualScenarioEditor:
 
         manual_surface = None
         manual_rect = None
-        undo_offset = 18
         if manual_message:
             manual_color = (200, 230, 150) if self.camera_processor and self.camera_processor.manual_control_enabled else (180, 180, 180)
             manual_surface = self.small_font.render(manual_message, True, manual_color)
             manual_rect = manual_surface.get_rect(center=(self.screen_width // 2, controls_rect.top - 18))
-            undo_offset = 36
-
-        # 3b. Undo/Redo status centered above controls legend
-        undo_status = self.get_undo_status()
-        undo_text = f"{undo_status} | Ctrl+Z: Undo | Ctrl+Y: Redo"
-        undo_surface = self.small_font.render(undo_text, True, (150, 200, 150))
-        undo_rect = undo_surface.get_rect(center=(self.screen_width // 2, controls_rect.top - undo_offset))
-        self.screen.blit(undo_surface, undo_rect)
         if manual_surface:
             self.screen.blit(manual_surface, manual_rect)
 
@@ -28569,8 +30150,10 @@ class VisualScenarioEditor:
 
     def _close_all_dropdowns(self, *, except_menu=None, keep_info_panel: bool = False) -> None:
         """Close all open dropdown-style menus in the UI."""
+        self.play_camera_menu_open = False
         self.resolution_menu_open = False
         self.fps_menu_open = False
+        self._culling_menu_open = False
         self.map_menu_visible = False
         self.scenario_menu_visible = False
         self.agent_dropdown_open = False
@@ -29300,6 +30883,13 @@ class VisualScenarioEditor:
             f"Camera: {camera_fps:0.1f} FPS" if camera_fps >= 0.05 else "Camera: 0.0 FPS",
             f"WallTime: {world_fps:0.1f} FPS" if world_fps >= 0.05 else "WallTime: 0.0 FPS",
         ]
+        # During a run (camera following an ego), show the current view mode + the C hotkey.
+        cp = self.camera_processor
+        if cp and (getattr(cp, "playback_camera_follow_enabled", False)
+                   or getattr(cp, "manual_control_enabled", False)):
+            view_label = {"chase": "Chase", "cockpit": "Cockpit"}.get(
+                getattr(cp, "playback_camera_mode", "topdown"), "Top-Down")
+            segments.append(f"View: {view_label} (C)")
         text_surface = self.fps_font.render("   |   ".join(segments), True, self.colors['fps'])
 
         padding = 10
@@ -29363,7 +30953,76 @@ class VisualScenarioEditor:
             pygame.draw.lines(self.screen, self.colors['text'], False, check_points, 2)
 
         self.screen.blit(label_surface, label_rect)
-    
+
+        # Ego Collision checkbox, placed in front of (to the left of) the No Rendering Mode group.
+        # When Ego Physics is off, collision is locked OFF and the control is dimmed/non-interactive.
+        ego_locked = not self.ego_physics_enabled
+        ego_label_color = tuple(c // 2 for c in self.colors['text']) if ego_locked else self.colors['text']
+        ego_label_surface = self.small_font.render("Ego Collision", True, ego_label_color)
+        ego_label_rect = ego_label_surface.get_rect()
+        ego_label_rect.topright = (checkbox_rect.left - 12, top)
+
+        ego_checkbox_rect = pygame.Rect(0, 0, checkbox_size, checkbox_size)
+        ego_checkbox_rect.top = ego_label_rect.top + (ego_label_rect.height - checkbox_size) // 2
+        ego_checkbox_rect.right = ego_label_rect.left - 8
+
+        ego_toggle_rect = ego_checkbox_rect.union(ego_label_rect).inflate(6, 4)
+        self.ego_collision_toggle_rect = ego_toggle_rect
+
+        ego_is_hovered = (not ego_locked) and ego_toggle_rect.collidepoint(mouse_pos)
+        ego_base_color = self.colors['toggle_on'] if self.ego_collision_enabled else self.colors['toggle_off']
+        if ego_locked:
+            ego_fill_color = tuple(c // 2 for c in ego_base_color)
+        elif ego_is_hovered:
+            ego_fill_color = tuple(min(c + 20, 255) for c in ego_base_color)
+        else:
+            ego_fill_color = ego_base_color
+
+        pygame.draw.rect(self.screen, ego_fill_color, ego_checkbox_rect, border_radius=3)
+        pygame.draw.rect(self.screen, ego_label_color, ego_checkbox_rect, 1, border_radius=3)
+
+        if self.ego_collision_enabled:
+            ego_check_points = [
+                (ego_checkbox_rect.left + 3, ego_checkbox_rect.centery),
+                (ego_checkbox_rect.left + ego_checkbox_rect.width // 2 - 1, ego_checkbox_rect.bottom - 4),
+                (ego_checkbox_rect.right - 3, ego_checkbox_rect.top + 3),
+            ]
+            pygame.draw.lines(self.screen, self.colors['text'], False, ego_check_points, 2)
+
+        self.screen.blit(ego_label_surface, ego_label_rect)
+
+        # Ego Physics checkbox, placed in front of (to the left of) the Ego Collision group.
+        phys_label_surface = self.small_font.render("Ego Physics", True, self.colors['text'])
+        phys_label_rect = phys_label_surface.get_rect()
+        phys_label_rect.topright = (ego_checkbox_rect.left - 12, top)
+
+        phys_checkbox_rect = pygame.Rect(0, 0, checkbox_size, checkbox_size)
+        phys_checkbox_rect.top = phys_label_rect.top + (phys_label_rect.height - checkbox_size) // 2
+        phys_checkbox_rect.right = phys_label_rect.left - 8
+
+        phys_toggle_rect = phys_checkbox_rect.union(phys_label_rect).inflate(6, 4)
+        self.ego_physics_toggle_rect = phys_toggle_rect
+
+        phys_is_hovered = phys_toggle_rect.collidepoint(mouse_pos)
+        phys_base_color = self.colors['toggle_on'] if self.ego_physics_enabled else self.colors['toggle_off']
+        if phys_is_hovered:
+            phys_fill_color = tuple(min(c + 20, 255) for c in phys_base_color)
+        else:
+            phys_fill_color = phys_base_color
+
+        pygame.draw.rect(self.screen, phys_fill_color, phys_checkbox_rect, border_radius=3)
+        pygame.draw.rect(self.screen, self.colors['text'], phys_checkbox_rect, 1, border_radius=3)
+
+        if self.ego_physics_enabled:
+            phys_check_points = [
+                (phys_checkbox_rect.left + 3, phys_checkbox_rect.centery),
+                (phys_checkbox_rect.left + phys_checkbox_rect.width // 2 - 1, phys_checkbox_rect.bottom - 4),
+                (phys_checkbox_rect.right - 3, phys_checkbox_rect.top + 3),
+            ]
+            pygame.draw.lines(self.screen, self.colors['text'], False, phys_check_points, 2)
+
+        self.screen.blit(phys_label_surface, phys_label_rect)
+
     def cleanup(self):
         """Cleanup resources"""
         print("Cleaning up...")
@@ -29473,6 +31132,7 @@ class VisualScenarioEditor:
                     self._dropdown_draw_ops = []
                 else:
                     self._maybe_open_result_window()
+                    self._reap_finished_runner()
 
                     # --- Update Simulation State ---
                     self._monitor_external_ego_status()
@@ -29499,15 +31159,19 @@ class VisualScenarioEditor:
                         self.tooltip_manager.clear_hover()
 
                     # --- Render Overlays and UI ---
-                    self.render_crosshair()  # Center crosshair
-                    # Render action menus BEFORE UI panels so they appear behind
-                    if self.camera_processor:
-                        self.camera_processor.render_action_menus(self.screen)
-                    self.render_ui()         # Top UI bar
-                    self.render_mode_toggle()
-                    active_menu = self.get_active_selection_menu()
-                    if (active_menu and not self.scenario_running):
-                        active_menu.render(self.screen, tooltip_manager=self.tooltip_manager)
+                    # `hide_all_ui` (backtick toggle) suppresses every overlay/UI draw,
+                    # leaving only the camera image; the camera blit and the state logic
+                    # below keep running, so input stays live while hidden.
+                    if not self.hide_all_ui:
+                        self.render_crosshair()  # Center crosshair
+                        # Render action menus BEFORE UI panels so they appear behind
+                        if self.camera_processor:
+                            self.camera_processor.render_action_menus(self.screen)
+                        self.render_ui()         # Top UI bar
+                        self.render_mode_toggle()
+                        active_menu = self.get_active_selection_menu()
+                        if (active_menu and not self.scenario_running):
+                            active_menu.render(self.screen, tooltip_manager=self.tooltip_manager)
 
                     # Sync vehicle_control_mode from camera_processor (menu pills write there)
                     # Skip during restore to avoid race with the MiniRunner thread
@@ -29516,44 +31180,50 @@ class VisualScenarioEditor:
                             self.camera_processor, 'vehicle_control_mode', 'basic_agent')
 
                     # --- Render Vehicle and Waypoint Overlays ---
-                    if self.camera_processor:
-                        self.camera_processor.render_all_overlays(self.screen)
+                    if not self.hide_all_ui:
+                        if self.camera_processor:
+                            self.camera_processor.render_all_overlays(self.screen)
 
-                    # --- Render Info Panel ---
-                    self.info_panel.render(self.screen, tooltip_manager=self.tooltip_manager)
+                        # --- Render Info Panel ---
+                        self.info_panel.render(self.screen, tooltip_manager=self.tooltip_manager)
 
-                    # --- Render Map Selection Menu ---
-                    if self.map_menu_visible and self.map_menu:
-                        mouse_pos = pygame.mouse.get_pos()
-                        self.map_menu.render(self.screen, mouse_pos)
+                        # --- Render Map Selection Menu ---
+                        if self.map_menu_visible and self.map_menu:
+                            mouse_pos = pygame.mouse.get_pos()
+                            self.map_menu.render(self.screen, mouse_pos)
 
-                    # --- Render Scenario Selection Menu ---
-                    if self.scenario_menu_visible and self.scenario_menu:
-                        mouse_pos = pygame.mouse.get_pos()
-                        self.scenario_menu.render(self.screen, mouse_pos)
+                        # --- Render Scenario Selection Menu ---
+                        if self.scenario_menu_visible and self.scenario_menu:
+                            mouse_pos = pygame.mouse.get_pos()
+                            self.scenario_menu.render(self.screen, mouse_pos)
 
-                if self.ui_manager:
-                    self.ui_manager.draw_ui(self.screen)
+                if not self.hide_all_ui:
+                    if self.ui_manager:
+                        self.ui_manager.draw_ui(self.screen)
 
-                self._render_external_swap_overlay()
-                self._render_error_overlay()
+                    self._render_external_swap_overlay()
+                    self._render_error_overlay()
 
-                fps_rect = self.render_fps_meter()
-                self.render_rendering_toggle(fps_rect)
+                    fps_rect = self.render_fps_meter()
+                    self.render_rendering_toggle(fps_rect)
 
-                # Deferred dropdown rendering (must be after FPS meter to overlay on top)
-                if getattr(self, "_dropdown_draw_ops", None):
-                    for rect, fill_color, text_surface in self._dropdown_draw_ops:
-                        if fill_color is not None:
-                            pygame.draw.rect(self.screen, fill_color, rect, border_radius=4)
-                            pygame.draw.rect(self.screen, self.colors['text'], rect, 1, border_radius=4)
-                        text_rect = text_surface.get_rect(center=rect.center)
-                        self.screen.blit(text_surface, text_rect)
+                    # Deferred dropdown rendering (must be after FPS meter to overlay on top)
+                    if getattr(self, "_dropdown_draw_ops", None):
+                        for rect, fill_color, text_surface in self._dropdown_draw_ops:
+                            if fill_color is not None:
+                                pygame.draw.rect(self.screen, fill_color, rect, border_radius=4)
+                                pygame.draw.rect(self.screen, self.colors['text'], rect, 1, border_radius=4)
+                            text_rect = text_surface.get_rect(center=rect.center)
+                            self.screen.blit(text_surface, text_rect)
 
-                # --- Render Tooltip (must be last, on top of everything) ---
-                if self.tooltip_manager:
-                    self.tooltip_manager.update()
-                    self.tooltip_manager.render(self.screen)
+                    # --- Render Tooltip (must be last, on top of everything) ---
+                    if self.tooltip_manager:
+                        self.tooltip_manager.update()
+                        self.tooltip_manager.render(self.screen)
+
+                    # --- Keyboard shortcuts help modal (drawn last, over everything) ---
+                    if self.keyboard_help_visible:
+                        self.render_keyboard_help_overlay(self.screen)
 
                 # --- Display Update ---
                 pygame.display.flip()
@@ -29639,6 +31309,10 @@ def main():
     parser.add_argument("--debug", action="store_true", help="Enable debug logs.")
     parser.add_argument("--port", type=int, help="CARLA port (default 2000).")
     parser.add_argument("--carla-path", dest="carla_path", help="Path to CarlaUE4.sh.")
+    parser.add_argument("--no-culling", action="store_true",
+                        help="Start with mesh culling off (max_culling_distance=0).")
+    parser.add_argument("--cull-distance", dest="cull_distance", type=float, default=None,
+                        help="Initial cull distance in metres (0 = off; default: remembers your last choice, otherwise Off).")
     # Legacy positional args (carla_path, port) preserved for compatibility.
     parser.add_argument("legacy_carla_path", nargs="?", default=None)
     parser.add_argument("legacy_port", nargs="?", type=int, default=None)
@@ -29661,6 +31335,14 @@ def main():
 
     carla_path = args.carla_path or args.legacy_carla_path
     port = args.port if args.port is not None else (args.legacy_port if args.legacy_port is not None else 2000)
+
+    # CLI culling overrides -> env vars read by VisualScenarioEditor._load_culling (CLI wins over a
+    # pre-set env var; --no-culling beats --cull-distance). If neither flag is given, leave any
+    # existing VSE_CULLING / VSE_CULL_DISTANCE untouched.
+    if args.no_culling:
+        os.environ['VSE_CULLING'] = '0'
+    if args.cull_distance is not None:
+        os.environ['VSE_CULL_DISTANCE'] = str(args.cull_distance)
 
     print("Visual Scenario Editor for CARLA")
     print("================================")

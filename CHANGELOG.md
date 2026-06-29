@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.2.0] - 2026-06-20
+
+### Added
+- Asynchronous-mode support for an external ego
+- Chase and Cockpit playback camera views
+- Play Cam dropdown to select the playback camera (Top-Down / Chase / Cockpit; also `C`)
+- Keyboard & mouse shortcuts help panel (`F1` / `H`, or the `?` button)
+- Custom collision test for the ego when its physics is disabled
+- Distance culling option — top-bar Cull dropdown (Off, 100–1000 m)
+
+### Changed
+- Pedestrian uses the speed of each waypoint it reaches; the first leg uses the pedestrian's own speed
+- Pedestrians no longer require waypoints (stand still when given none)
+- Results window updated — resizable, fit-to-content, and result scoring reworked
+- Vehicles spawn with handbrake on — no longer roll down slopes before activation
+- NPC vehicles keep a safe following distance from the ego when "Ignore Vehicles" is off
+- Drive Clock button shown only when connected to a remote server
+
+### Fixed
+- Vehicle placement height check updated
+- Pedestrian pathing updated (smooth turning, walk through idle-0 waypoints, no teleport)
+- Pedestrians auto-face their first waypoint
+- Triggers list repopulates after a world reload
+- Scripted NPC movement updated — reliable start, correct heading in async/VIL
+
 ## [1.1.0] - 2026-04-08
 
 ### Added

@@ -66,7 +66,7 @@ Optional (NPC behavior):
 - In the Info panel (right side), you can toggle:
   - **Ignore Traffic Lights** (NPC will not stop for traffic lights)
   - **Ignore Stop Signs** (stop signs, not traffic-light stop lines)
-  - **Ignore Vehicles** (does not avoid other vehicles; enabled by default for new NPCs)
+  - **Ignore Vehicles** (does not avoid other vehicles; enabled by default for new NPCs). When *unchecked*, the NPC watches for the ego in its path and keeps a safe following distance — easing off when the ego is still far ahead and braking harder as it closes in, instead of slamming to a stop.
 - These options are saved into the scenario JSON and applied during playback.
 
 Now pick one routing method:
@@ -89,6 +89,11 @@ Expect:
 2) Choose a pedestrian blueprint.
 3) Hold `Ctrl` and **Left Click** to spawn.
 4) Add waypoints via the floating menu (same idea as vehicles).
+
+Good to know (pedestrians):
+- A pedestrian **does not need any waypoints** — with none, it simply stands still at its spawn for the whole scenario (it no longer makes playback fail).
+- A pedestrian **auto-faces its first waypoint**; you don't aim it by hand (the Rotate icon is hidden). Its heading re-aims whenever you move the pedestrian or its first waypoint.
+- During playback the pedestrian walks the first leg (spawn → first waypoint) at its **own Speed**, then adopts the **Speed (km/h)** of each waypoint it reaches for the next leg (the final destination's speed is never used). A waypoint **Speed of 0** means "stop here and stand still" (no teleport). Set a waypoint's **Idle Time** above 0 to pause there; an Idle Time of 0 lets it walk straight through, turning smoothly.
 
 ### 5) Add the global trigger
 
@@ -141,8 +146,9 @@ Expect:
 
 Expect:
 - While playing, editing is disabled.
-- When finished/stopped, VSE returns to edit mode and shows a results window.
-- Results are written next to your scenario JSON as `<scenario>.txt`.
+- When finished/stopped, VSE returns to edit mode and shows a **results window**.
+- The results window opens sized to fit the criteria table and is **resizable** — drag a corner to grow or shrink it; scrollbars appear only when the table is larger than the window. It scores the ego drive (one row per check, e.g. CollisionTest, plus a GLOBAL RESULT row) and has Copy / Save / Close buttons.
+- Results are also written next to your scenario JSON as `<scenario>.txt`.
 
 ## Shortcuts You’ll Use Most
 
@@ -150,6 +156,7 @@ Camera:
 - Pan: `W/A/S/D` or arrow keys or holding down the right mouse button
 - Zoom: mouse wheel
 - Jump to cursor: `Shift + Right Click`
+- Cycle the playback camera (during Play): `C` (Top-Down → Chase → Cockpit)
 
 Editing:
 - Save: `Ctrl+S`
@@ -157,6 +164,7 @@ Editing:
 - Undo / Redo: `Ctrl+Z` / `Ctrl+Y` (or `Ctrl+Shift+Z`)
 - Delete selected thing: `Delete`
 - Toggle overlays: `O` (OpenDRIVE lanes), `T` (traffic lights)
+- Show keyboard & mouse shortcuts: `F1` or `H` (or click the `?` button in the top bar)
 - Cancel placement / clear selection: `ESC` or right mouse click
 
 ## Common Options (How Things Behave)
@@ -167,6 +175,11 @@ Editing:
 - Selection:
   - Click an actor to select; a floating icon menu appears near it.
   - The Info panel (right side) shows editable fields like speed, idle time, trigger radius, and vehicle ignore flags (traffic lights / stop signs / vehicles).
+- Distance culling (top bar **Cull** dropdown, right after **Stream resolution**):
+  - Pick a distance (**100 → 1000 m**) to stop drawing distant meshes (faraway buildings/props/vehicles drop out; roads and terrain still render), or **Off** to draw everything. It **starts Off** until you pick a distance, applies on the next frame, and your choice is remembered next time.
+  - Any distance also makes the CARLA server-window spectator follow the ego during playback; **Off** leaves the spectator alone.
+- Where actors sit: placed vehicles/pedestrians appear slightly **above** the ground so they don't clip into terrain; physics settles them on **Play**. A vehicle dragged onto a curb/sidewalk is raised to the lowest height that fits, so it reliably reappears after Play.
+- On slopes, a vehicle waiting for its trigger or idle delay keeps its **handbrake** applied, so it stays put instead of rolling downhill before it starts.
 
 ## Troubleshooting
 
@@ -175,7 +188,7 @@ Editing:
 - **“Cannot change map while a scenario is running”**: press **Stop** first.
 - **Play fails but editing works**: playback uses `vse_play.py` dependencies; check console logs.
 - **Low FPS with an agent-controlled ego**: set **Stream resolution** (top bar) to **No Camera** to disable the camera stream (often improves FPS).
-- **No camera frames / editor looks frozen**: try enabling **Drive Clock** in the top bar if the world is in synchronous mode.
+- **No camera frames / editor looks frozen**: on a **remote server** in synchronous mode, try enabling **Drive Clock** in the top bar (the toggle is shown only for remote servers; on a local/managed server VSE drives ticks automatically).
 
 ## Optional: Choose How the Ego is Driven (Agent Mode)
 
@@ -192,9 +205,30 @@ You can't change the agent while a scenario is running.
 In the top bar, the **NPC Agent** dropdown controls how NPC vehicles follow their routes:
 
 - **Simulated** (default): Uses CARLA's BasicAgent — realistic steering and throttle. May overshoot sharp turns at high speed.
-- **Scripted**: Uses ScenarioRunner's SimpleVehicleControl — sets velocity directly toward waypoints. Exact paths regardless of speed.
+- **Scripted**: Uses ScenarioRunner’s SimpleVehicleControl — sets velocity directly toward waypoints. Exact paths regardless of speed. A triggered Scripted car now always starts driving (a previous edge case could leave it stuck), and in asynchronous / VIL runs it faces its direction of travel and follows the route instead of spinning in place (its path and speed are unchanged).
 
 The selected mode applies to all NPC vehicles during playback. Hover over each item for a tooltip.
+
+## Optional: Playback Camera Views (Chase / Cockpit)
+
+In the top bar, the **Play Cam** dropdown (left of **Stream resolution**) chooses how the camera watches the ego during playback. You can also press **`C`** during a run to cycle the views:
+
+- **Top-Down** — the usual overhead editor view; overlays and mouse panning work as usual.
+- **Chase** — follows from behind the vehicle.
+- **Cockpit** — a driver-seat view, locked to the car so it turns with it.
+
+Expect:
+- Picking **Chase** or **Cockpit** locks the camera to the vehicle and auto-hides the UI for a clean view; mouse pan/zoom and `W/A/S/D` panning are disabled there. Switch back to **Top-Down** to pan or edit.
+- The current view shows on the top-right status line, and your last choice is remembered across restarts (default: **Chase**).
+- To stop the run while the UI is hidden, just press **Escape**.
+
+## Optional: Running with an External Ego (Autoware Mini / VIL)
+
+VSE can edit and play scenarios while an external self-driving stack (e.g. Autoware Mini) drives the ego. This works whether that stack runs CARLA in **synchronous** mode or in **asynchronous / vehicle-in-the-loop (VIL)** mode — you do not have to put the server in synchronous mode for VSE to find the ego.
+
+- **Connect**: launch the external stack. Expect VSE to detect the external ego automatically (it adopts any vehicle whose `role_name` is `ego_vehicle`/`hero`) and follow it. Your editor ego becomes a non-selectable placeholder marking the start position, and the **Ego Agent** dropdown locks to **Custom Agent**.
+- **For a VIL ego**, untick **Ego Physics** (top-right) so VSE leaves CARLA physics off — otherwise gravity/collision fight the external stack's per-tick teleport and the car jitters or sinks.
+- **Disconnect**: close the external stack. Expect VSE to notice within a few seconds, restore a local ego so you can keep editing, and return the world to asynchronous mode.
 
 ## Optional: Export to OpenSCENARIO (.xosc)
 
