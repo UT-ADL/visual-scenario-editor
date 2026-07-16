@@ -1,6 +1,7 @@
 # VSE Quick Tutorial: Create and Play a Scenario
 
-This is a short, beginner-friendly tutorial for `vse.py` (Visual Scenario Editor).
+This is a short, beginner-friendly tutorial for `vse.py` (Visual Scenario Editor) — the place to
+start if you are new.
 
 #### Creating Scenarios
 
@@ -42,7 +43,8 @@ Expect:
 
 Tips:
 - Hold `Ctrl+Shift` while clicking to place without lane snap (free placement).
-- To move/rotate later: click the ego to open the small floating icon menu.
+- To move the ego later: press on it, hold, and drag it (hold `Shift` for free
+  placement). Clicking it once opens the small floating icon menu (rotate, routes, delete).
 
 ### 2) Give the ego a route/destination
 
@@ -61,6 +63,10 @@ Expect:
 2) Choose a vehicle blueprint.
 3) Hold `Ctrl` and **Left Click** to spawn it.
 4) Click the spawned NPC vehicle to select it.
+
+After placement, use the **Blueprint** dropdown in the Info panel to change the NPC's vehicle
+model. Its X/Y position, heading, route, speed, and personal trigger stay with it; the editor
+recalculates the height so the replacement model remains grounded.
 
 Optional (NPC behavior):
 - In the Info panel (right side), you can toggle:
@@ -90,6 +96,10 @@ Expect:
 3) Hold `Ctrl` and **Left Click** to spawn.
 4) Add waypoints via the floating menu (same idea as vehicles).
 
+To change the pedestrian model later, select it and choose another entry from the **Blueprint**
+dropdown in the Info panel. Its X/Y position, route, speed, and personal trigger stay with it;
+the editor recalculates the height from the replacement pedestrian's standing height.
+
 Good to know (pedestrians):
 - A pedestrian **does not need any waypoints** — with none, it simply stands still at its spawn for the whole scenario (it no longer makes playback fail).
 - A pedestrian **auto-faces its first waypoint**; you don't aim it by hand (the Rotate icon is hidden). Its heading re-aims whenever you move the pedestrian or its first waypoint.
@@ -99,10 +109,10 @@ Good to know (pedestrians):
 
 1) Click **Trigger** mode.
 2) Click in the world to place the trigger circle.
-3) Click the trigger to select it, then use the floating menu:
-   - **Move**: drag the center
-   - **Scale**: drag to change radius
-   - **Delete**: remove it
+3) Click the trigger to select it:
+   - **Move**: grab the circle and drag it (press, hold, move)
+   - **Scale** (floating menu): drag to change the radius
+   - **Delete** (floating menu): remove it
 
 Expect:
 - A single trigger zone exists (only one global trigger per scenario).
@@ -114,7 +124,10 @@ Personal triggers are per-actor trigger circles (not supported for the ego).
 1) Select an NPC vehicle or pedestrian.
 2) In the floating menu, click **Add Trigger**.
 3) Click to place the trigger center.
-4) Select the trigger circle to move/scale it (or edit radius in the Info panel).
+4) Select the trigger circle, then drag it to move it, use **Scale** from its menu, or edit the
+   radius in the Info panel.
+5) To remove it, use **Remove Trigger** on the actor or **Delete** on the selected circle. Press
+   `Ctrl+Z` and expect the same trigger to return at the same position and size.
 
 ### 7) Traffic-light triggers
 
@@ -153,27 +166,45 @@ Expect:
 ## Shortcuts You’ll Use Most
 
 Camera:
-- Pan: `W/A/S/D` or arrow keys or holding down the right mouse button
+- Pan: `W/A/S/D` or arrow keys or holding down the right (or middle) mouse button
 - Zoom: mouse wheel
-- Jump to cursor: `Shift + Right Click`
+- 3D view: press `Tab` (or the purple `3D View (Tab)` button centered in the top bar) — the
+  view tilts around the spot you
+  were looking at. Right-drag to look around, middle-drag to move, wheel to zoom, `Tab` to go
+  back. You can click things to inspect them in 3D; placing and moving happens in the top-down
+  view (the editor shows a hint if you try in 3D). The camera never goes below the ground.
 - Cycle the playback camera (during Play): `C` (Top-Down → Chase → Cockpit)
 
 Editing:
 - Save: `Ctrl+S`
 - Load: `Ctrl+L`
 - Undo / Redo: `Ctrl+Z` / `Ctrl+Y` (or `Ctrl+Shift+Z`)
-- Delete selected thing: `Delete`
+- Delete selected thing (or group): `Delete`
+- Select a group: hold **Left Click** on empty ground and drag a box around things
+- Add/remove one more: a quick `Shift + Left Click` — release without dragging
+  (or `Shift` + drag another box)
 - Toggle overlays: `O` (OpenDRIVE lanes), `T` (traffic lights)
 - Show keyboard & mouse shortcuts: `F1` or `H` (or click the `?` button in the top bar)
-- Cancel placement / clear selection: `ESC` or right mouse click
+- Cancel placement / clear selection: `ESC` or a right-click **tap** (click and release without
+  dragging — dragging with the right button pans instead)
 
 ## Common Options (How Things Behave)
 
 - Lane snap vs free placement:
   - Spawn: `Ctrl+Click` snaps (vehicles/ego), `Ctrl+Shift+Click` is free placement.
   - Move/waypoints: snap by default; hold `Shift` for free placement while dragging/placing.
+- Moving things: press on any object (vehicle, pedestrian, ego, trigger circle, waypoint), hold,
+  and drag it. `ESC` (or a right-click tap) during the drag cancels it and puts the object back.
 - Selection:
   - Click an actor to select; a floating icon menu appears near it.
+  - Clicking empty ground does **not** deselect a vehicle/pedestrian or its route — press `ESC`,
+    do a right-click tap, or select something else.
+  - Drag a box on empty ground to select **several actors at once** (they get orange outlines and
+    an "N selected" label). Press `Delete` (or the floating Delete icon) to remove them all — one
+    `Ctrl+Z` brings everything back. A quick `Shift+Click` or `Shift`+box adds/removes single
+    items (`Shift` + dragging an object moves it without lane snap instead).
+  - Box-select several **waypoints** of a route the same way to delete them in one step, or to
+    edit their Speed / Idle Time together in the Info panel.
   - The Info panel (right side) shows editable fields like speed, idle time, trigger radius, and vehicle ignore flags (traffic lights / stop signs / vehicles).
 - Distance culling (top bar **Cull** dropdown, right after **Stream resolution**):
   - Pick a distance (**100 → 1000 m**) to stop drawing distant meshes (faraway buildings/props/vehicles drop out; roads and terrain still render), or **Off** to draw everything. It **starts Off** until you pick a distance, applies on the next frame, and your choice is remembered next time.

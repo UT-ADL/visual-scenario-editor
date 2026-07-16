@@ -16,13 +16,27 @@ A graphical tool for creating and editing driving scenarios for the CARLA Simula
 - Integration with CARLA ScenarioRunner
 - Export to OpenSCENARIO (.xosc)
 
+## Compatibility
+
+VSE runs on **CARLA 0.9.15 and 0.9.16**. The `carla` Python module you install must match the
+version of the server you run against.
+
+For scenario playback (the **Play** button and `vse_play.py`), VSE works with any of three
+ScenarioRunners: the [UT-ADL ScenarioRunner fork](https://github.com/UT-ADL/scenario_runner)
+or the **stock** CARLA ScenarioRunner shipped for 0.9.15 or 0.9.16. Point `SCENARIO_RUNNER_ROOT`
+at whichever you have installed — VSE adapts automatically, no configuration needed.
+
+The install steps below use 0.9.15 as a concrete example. For 0.9.16, follow the same steps,
+substituting the version in the download and the `pip install` — the UT Lexus asset is the same
+for both versions.
+
 ## Installation
 
 ### Prerequisites
 
 - Python 3.8+
-- CARLA Simulator 0.9.15 (or compatible version)
-- CARLA ScenarioRunner
+- CARLA Simulator 0.9.15 or 0.9.16
+- CARLA ScenarioRunner (UT-ADL fork or stock 0.9.15 / 0.9.16 — see Compatibility above)
 - CARLA UT Lexus
 
 
@@ -82,6 +96,8 @@ A graphical tool for creating and editing driving scenarios for the CARLA Simula
    ```
    git clone https://github.com/UT-ADL/scenario_runner.git
    ```
+   **Note:** The stock CARLA ScenarioRunner (0.9.15 or 0.9.16) works too — clone or download
+   whichever you have and set `SCENARIO_RUNNER_ROOT` to it in step 14. You do not need the fork.
 #### 13. Install Scenario Runner requirements
    ```
    pip install -r scenario_runner/requirements.txt
@@ -123,7 +139,7 @@ Run a saved scenario on existing Carla server with external agent:
 python vse_play.py scenario.json --agent /path/to/my_agent.py
 ```
 
-For futher instructions check the [tutorial](tutorial.md)
+For further instructions check the [tutorial](tutorial.md) — the beginner walkthrough.
 
 
 ### Launching VSE with Autoware Mini

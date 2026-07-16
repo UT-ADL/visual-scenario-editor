@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.3.0] - 2026-07-16
+
+### Added
+- 3D orbit view: `Tab` or the top-bar `3D View` button tilts the camera around the point you were looking at (right-drag orbits, middle-drag pans, wheel zooms); viewing and selecting only — editing stays in top-down, and Play returns to top-down automatically
+- Moving is grab-to-move everywhere: the Move icon is gone from all floating menus — press on a vehicle, pedestrian, the ego, or a trigger circle, hold, and drag (`Shift` during the drag = free placement; `ESC` or a right-click tap cancels the drag)
+- Group selection: drag a box on empty ground to select several actors at once; `Delete` removes the whole group and a single `Ctrl+Z` restores it. A box that catches no actors selects the route waypoints inside it, or a visible trigger / traffic-light group
+- Additive selection: `Shift+Click` and `Shift`+box toggle actors or waypoints in and out of the selection
+- Waypoint-group editing: with several waypoints selected, the Info panel edits Speed / Speed Deviation / Idle Time for all of them at once
+- NPC vehicle and pedestrian blueprints can be changed from the Info panel after placement, with undo/redo support
+
+### Changed
+
+- A right-click tap now cancels/deselects one step (like `ESC`); dragging with the right button still pans
+- Clicking empty ground no longer deselects a vehicle/pedestrian, traffic-light group, or displayed route — deselect with `ESC`, a right-click tap, or by selecting something else
+- The green selection circle now also appears around a selected vehicle (and the ego), sized to the vehicle's body
+- Internal code reorganization: `vse.py` and `vse_play.py` are now thin launchers for the new `vse_editor/`, `vse_playback/`, and `vse_common/` packages
+
+### Fixed
+- Playback now runs against the stock CARLA ScenarioRunner (0.9.15 and 0.9.16), not only the UT-ADL fork
+- Pedestrians snap to the ground when dragged and spawn grounded; floating pedestrians in saved scenarios are corrected on load — they no longer fall from the sky on Play
+- A crashed CARLA server is now detected and shown as an overlay with a restart button, with the usual prompt for unsaved work; playback aborts within ~5 s on a dead server instead of waiting for the scenario timeout
+- Completing one traffic-light trigger sequence no longer resets other groups' still-running sequences
+
 ## [1.2.0] - 2026-06-20
 
 ### Added

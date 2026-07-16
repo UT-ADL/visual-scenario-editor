@@ -1,79 +1,7 @@
 {
   "vehicles": [
     {
-      "id": 710,
-      "type": "walker.pedestrian.0001",
-      "location": {
-        "x": -5.561142921447754,
-        "y": 60.416141510009766,
-        "z": 35.294673919677734
-      },
-      "rotation": {
-        "pitch": 0.0,
-        "yaw": -93.52764129638672,
-        "roll": 0.0
-      },
-      "speed_km_h": 5,
-      "idle_time_s": 0.0,
-      "waypoints": [
-        {
-          "index": 1,
-          "location": {
-            "x": -6.663697242736816,
-            "y": 42.53115463256836,
-            "z": 34.699920654296875
-          },
-          "yaw": null,
-          "speed_km_h": 5.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 2,
-          "location": {
-            "x": -17.498476230648002,
-            "y": 42.39582736261279,
-            "z": 35.14683151245117
-          },
-          "yaw": null,
-          "speed_km_h": 5.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": "destination",
-          "location": {
-            "x": -37.73667277914501,
-            "y": 44.038283377281445,
-            "z": 35.31527328491211
-          },
-          "yaw": null,
-          "speed_km_h": 5.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": true
-        }
-      ],
-      "ignore_traffic_lights": false,
-      "ignore_stop_signs": false,
-      "ignore_vehicles": false,
-      "destination_speed_km_h": 5.0,
-      "trigger": {
-        "center": {
-          "x": -23.608799001998058,
-          "y": 50.80432419418322,
-          "z": 36.462196350097656
-        },
-        "radius": 2.5
-      }
-    },
-    {
-      "id": 711,
+      "id": 313,
       "type": "walker.pedestrian.0002",
       "location": {
         "x": 1.3005754947662354,
@@ -187,7 +115,7 @@
       }
     },
     {
-      "id": 712,
+      "id": 314,
       "type": "walker.pedestrian.0003",
       "location": {
         "x": 21.595863342285156,
@@ -259,7 +187,7 @@
       }
     },
     {
-      "id": 713,
+      "id": 315,
       "type": "walker.pedestrian.0004",
       "location": {
         "x": 6.034723281860352,
@@ -331,7 +259,7 @@
       }
     },
     {
-      "id": 714,
+      "id": 316,
       "type": "vehicle.ford.mustang",
       "location": {
         "x": 85.2236099243164,
@@ -853,7 +781,7 @@
       }
     },
     {
-      "id": 715,
+      "id": 317,
       "type": "vehicle.audi.tt",
       "location": {
         "x": 183.13973999023438,
@@ -1319,7 +1247,7 @@
       }
     },
     {
-      "id": 716,
+      "id": 318,
       "type": "walker.pedestrian.0005",
       "location": {
         "x": 189.62815856933594,
@@ -1405,7 +1333,7 @@
       }
     },
     {
-      "id": 717,
+      "id": 319,
       "type": "walker.pedestrian.0006",
       "location": {
         "x": 217.03860473632812,
@@ -1491,7 +1419,7 @@
       }
     },
     {
-      "id": 718,
+      "id": 320,
       "type": "vehicle.vespa.zx125",
       "location": {
         "x": 156.41830444335938,
@@ -1747,7 +1675,7 @@
       }
     },
     {
-      "id": 719,
+      "id": 321,
       "type": "walker.pedestrian.0007",
       "location": {
         "x": 121.18360900878906,
@@ -1805,7 +1733,7 @@
       }
     },
     {
-      "id": 720,
+      "id": 322,
       "type": "walker.pedestrian.0008",
       "location": {
         "x": 136.440185546875,
@@ -1863,7 +1791,7 @@
       }
     },
     {
-      "id": 721,
+      "id": 323,
       "type": "walker.pedestrian.0009",
       "location": {
         "x": 117.13321685791016,
@@ -1921,7 +1849,7 @@
       }
     },
     {
-      "id": 722,
+      "id": 324,
       "type": "vehicle.mitsubishi.fusorosa",
       "location": {
         "x": 59.50773620605469,
@@ -2289,7 +2217,7 @@
       }
     },
     {
-      "id": 723,
+      "id": 325,
       "type": "vehicle.yamaha.yzf",
       "location": {
         "x": -10.475961685180664,
@@ -2741,7 +2669,7 @@
       }
     },
     {
-      "id": 724,
+      "id": 326,
       "type": "vehicle.kawasaki.ninja",
       "location": {
         "x": -22.26517105102539,
@@ -3151,7 +3079,7 @@
       }
     },
     {
-      "id": 725,
+      "id": 327,
       "type": "vehicle.mercedes.coupe",
       "location": {
         "x": -166.0546875,
@@ -4051,766 +3979,7 @@
       }
     },
     {
-      "id": 726,
-      "type": "vehicle.tesla.cybertruck",
-      "location": {
-        "x": 36.72895812988281,
-        "y": 114.63140106201172,
-        "z": 34.099998474121094
-      },
-      "rotation": {
-        "pitch": 0.0,
-        "yaw": 125.81784057617188,
-        "roll": 0.0
-      },
-      "speed_km_h": 50.0,
-      "idle_time_s": 0.0,
-      "waypoints": [
-        {
-          "index": 1,
-          "location": {
-            "x": 32.99741473990977,
-            "y": 119.64688203555531,
-            "z": 33.9000129699707
-          },
-          "yaw": 125.01884460449219,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 2,
-          "location": {
-            "x": 29.248130661863645,
-            "y": 121.88638723860437,
-            "z": 33.9000129699707
-          },
-          "yaw": 129.39242553710938,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 3,
-          "location": {
-            "x": 26.2389125639449,
-            "y": 123.36329250068482,
-            "z": 33.9000129699707
-          },
-          "yaw": 143.54635620117188,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 4,
-          "location": {
-            "x": 23.88241195678711,
-            "y": 124.79347229003906,
-            "z": 33.91783142089844
-          },
-          "yaw": 144.4998321533203,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 5,
-          "location": {
-            "x": 20.598766326904297,
-            "y": 127.47451782226562,
-            "z": 33.96923828125
-          },
-          "yaw": 133.6005096435547,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 6,
-          "location": {
-            "x": 18.69573402404785,
-            "y": 130.0258331298828,
-            "z": 33.960174560546875
-          },
-          "yaw": 122.78832244873047,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 7,
-          "location": {
-            "x": 17.16559410095215,
-            "y": 133.78065490722656,
-            "z": 33.944705963134766
-          },
-          "yaw": 99.20732116699219,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 8,
-          "location": {
-            "x": 16.739334106445312,
-            "y": 137.611328125,
-            "z": 33.92902374267578
-          },
-          "yaw": 87.40755462646484,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 9,
-          "location": {
-            "x": 17.531442642211914,
-            "y": 141.8624267578125,
-            "z": 33.91388702392578
-          },
-          "yaw": 68.0151138305664,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 10,
-          "location": {
-            "x": 19.737878799438477,
-            "y": 147.17457580566406,
-            "z": 33.90212631225586
-          },
-          "yaw": 68.3844223022461,
-          "speed_km_h": 30.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 11,
-          "location": {
-            "x": 28.253881454467773,
-            "y": 168.31173706054688,
-            "z": 33.90037155151367
-          },
-          "yaw": 67.69851684570312,
-          "speed_km_h": 30.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 12,
-          "location": {
-            "x": 46.83887481689453,
-            "y": 205.58815002441406,
-            "z": 33.9636116027832
-          },
-          "yaw": 69.24317169189453,
-          "speed_km_h": 30.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 13,
-          "location": {
-            "x": 54.637603759765625,
-            "y": 225.3573760986328,
-            "z": 33.89997863769531
-          },
-          "yaw": 68.0810317993164,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 14,
-          "location": {
-            "x": 57.683876037597656,
-            "y": 232.9015350341797,
-            "z": 35.96013641357422
-          },
-          "yaw": 67.94364166259766,
-          "speed_km_h": 30.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 15,
-          "location": {
-            "x": 72.058837890625,
-            "y": 268.62713623046875,
-            "z": 33.900020599365234
-          },
-          "yaw": 68.15658569335938,
-          "speed_km_h": 70.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 16,
-          "location": {
-            "x": 77.96481323242188,
-            "y": 283.2938232421875,
-            "z": 33.919002532958984
-          },
-          "yaw": 68.1426010131836,
-          "speed_km_h": 70.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 17,
-          "location": {
-            "x": 90.1415023803711,
-            "y": 313.4317321777344,
-            "z": 34.12068176269531
-          },
-          "yaw": 68.05311584472656,
-          "speed_km_h": 100.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 18,
-          "location": {
-            "x": 103.21997833251953,
-            "y": 345.9151611328125,
-            "z": 34.38169860839844
-          },
-          "yaw": 67.95159912109375,
-          "speed_km_h": 100.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 19,
-          "location": {
-            "x": 115.99407196044922,
-            "y": 376.6375427246094,
-            "z": 34.68654251098633
-          },
-          "yaw": 67.22361755371094,
-          "speed_km_h": 100.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 20,
-          "location": {
-            "x": 127.60234832763672,
-            "y": 403.546142578125,
-            "z": 34.35109329223633
-          },
-          "yaw": 65.72936248779297,
-          "speed_km_h": 100.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 21,
-          "location": {
-            "x": 133.6608123779297,
-            "y": 416.48480224609375,
-            "z": 34.44784927368164
-          },
-          "yaw": 64.19453430175781,
-          "speed_km_h": 100.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 22,
-          "location": {
-            "x": 141.2766876220703,
-            "y": 429.8562927246094,
-            "z": 34.599979400634766
-          },
-          "yaw": 57.02653503417969,
-          "speed_km_h": 100.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 23,
-          "location": {
-            "x": 151.04832458496094,
-            "y": 444.39508056640625,
-            "z": 34.59996032714844
-          },
-          "yaw": 67.98947143554688,
-          "speed_km_h": 100.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 24,
-          "location": {
-            "x": 170.33676147460938,
-            "y": 474.2215270996094,
-            "z": 34.676387786865234
-          },
-          "yaw": 56.70943832397461,
-          "speed_km_h": 100.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 25,
-          "location": {
-            "x": 184.3705596923828,
-            "y": 495.51531982421875,
-            "z": 34.79982376098633
-          },
-          "yaw": 56.83481216430664,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 26,
-          "location": {
-            "x": 196.9507598876953,
-            "y": 514.7879638671875,
-            "z": 34.76376724243164
-          },
-          "yaw": 56.66796875,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 27,
-          "location": {
-            "x": 207.6497344970703,
-            "y": 531.0318603515625,
-            "z": 34.522850036621094
-          },
-          "yaw": 56.57265853881836,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 28,
-          "location": {
-            "x": 214.28265380859375,
-            "y": 541.0879516601562,
-            "z": 34.50599670410156
-          },
-          "yaw": 56.6182861328125,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 29,
-          "location": {
-            "x": 222.2140350341797,
-            "y": 551.922119140625,
-            "z": 34.65064239501953
-          },
-          "yaw": 42.95484161376953,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 30,
-          "location": {
-            "x": 226.7109375,
-            "y": 553.7088623046875,
-            "z": 34.668025970458984
-          },
-          "yaw": 0.34064891934394836,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 31,
-          "location": {
-            "x": 232.22373962402344,
-            "y": 551.8624267578125,
-            "z": 34.52630615234375
-          },
-          "yaw": -30.918027877807617,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 32,
-          "location": {
-            "x": 235.51889038085938,
-            "y": 548.4819946289062,
-            "z": 34.386444091796875
-          },
-          "yaw": -58.6895866394043,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 33,
-          "location": {
-            "x": 237.45895385742188,
-            "y": 543.3712768554688,
-            "z": 34.14585876464844
-          },
-          "yaw": -81.06143188476562,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 34,
-          "location": {
-            "x": 237.67613220214844,
-            "y": 536.3379516601562,
-            "z": 33.996700286865234
-          },
-          "yaw": -110.2036361694336,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 35,
-          "location": {
-            "x": 235.94216918945312,
-            "y": 531.6713256835938,
-            "z": 33.92380905151367
-          },
-          "yaw": -110.93639373779297,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 36,
-          "location": {
-            "x": 232.94418334960938,
-            "y": 525.2005004882812,
-            "z": 33.819705963134766
-          },
-          "yaw": -119.2293472290039,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 37,
-          "location": {
-            "x": 230.58126831054688,
-            "y": 521.5374755859375,
-            "z": 33.760467529296875
-          },
-          "yaw": -123.54259490966797,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 38,
-          "location": {
-            "x": 225.83834838867188,
-            "y": 514.384765625,
-            "z": 33.88388442993164
-          },
-          "yaw": -123.52960968017578,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 39,
-          "location": {
-            "x": 220.4461212158203,
-            "y": 500.462890625,
-            "z": 34.01620864868164
-          },
-          "yaw": -123.64195251464844,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 40,
-          "location": {
-            "x": 214.8116455078125,
-            "y": 486.12615966796875,
-            "z": 34.142208099365234
-          },
-          "yaw": -123.8026123046875,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 41,
-          "location": {
-            "x": 202.4968719482422,
-            "y": 467.7049560546875,
-            "z": 34.24169921875
-          },
-          "yaw": -123.64290618896484,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 42,
-          "location": {
-            "x": 195.20944213867188,
-            "y": 456.7911071777344,
-            "z": 34.30134582519531
-          },
-          "yaw": -123.62718200683594,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 43,
-          "location": {
-            "x": 186.91250610351562,
-            "y": 444.2907409667969,
-            "z": 34.30988311767578
-          },
-          "yaw": -123.7260971069336,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 44,
-          "location": {
-            "x": 182.15213012695312,
-            "y": 437.08465576171875,
-            "z": 34.30999755859375
-          },
-          "yaw": -122.37639617919922,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 45,
-          "location": {
-            "x": 179.02407836914062,
-            "y": 430.59619140625,
-            "z": 34.30999755859375
-          },
-          "yaw": -103.90168762207031,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 46,
-          "location": {
-            "x": 178.5914306640625,
-            "y": 425.6269836425781,
-            "z": 34.27792739868164
-          },
-          "yaw": -87.43663787841797,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 47,
-          "location": {
-            "x": 180.69422912597656,
-            "y": 419.8522644042969,
-            "z": 34.202598571777344
-          },
-          "yaw": -52.495521545410156,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 48,
-          "location": {
-            "x": 185.26060485839844,
-            "y": 415.8548583984375,
-            "z": 34.164451599121094
-          },
-          "yaw": 320.13726806640625,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 49,
-          "location": {
-            "x": 192.3103790283203,
-            "y": 410.7387390136719,
-            "z": 34.10515594482422
-          },
-          "yaw": 328.186279296875,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 50,
-          "location": {
-            "x": 205.615234375,
-            "y": 403.59259033203125,
-            "z": 34.08001708984375
-          },
-          "yaw": 334.1387634277344,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 51,
-          "location": {
-            "x": 223.89883422851562,
-            "y": 394.9016418457031,
-            "z": 34.29484176635742
-          },
-          "yaw": 335.2138671875,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": "destination",
-          "location": {
-            "x": 245.72149658203125,
-            "y": 384.69866943359375,
-            "z": 33.91316223144531
-          },
-          "yaw": 334.7459716796875,
-          "speed_km_h": 50.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": true
-        }
-      ],
-      "ignore_traffic_lights": false,
-      "ignore_stop_signs": false,
-      "ignore_vehicles": true,
-      "max_lat_acc": 3000.0,
-      "destination_speed_km_h": 50.0,
-      "trigger": {
-        "center": {
-          "x": 8.489182868361924,
-          "y": 118.59777382033975,
-          "z": 34.030818939208984
-        },
-        "radius": 5.0
-      }
-    },
-    {
-      "id": 727,
+      "id": 328,
       "type": "walker.pedestrian.0010",
       "location": {
         "x": -36.6060791015625,
@@ -4896,7 +4065,7 @@
       }
     },
     {
-      "id": 728,
+      "id": 329,
       "type": "walker.pedestrian.0011",
       "location": {
         "x": -73.30115509033203,
@@ -4982,7 +4151,7 @@
       }
     },
     {
-      "id": 729,
+      "id": 330,
       "type": "walker.pedestrian.0012",
       "location": {
         "x": 32.10724639892578,
@@ -5068,7 +4237,7 @@
       }
     },
     {
-      "id": 730,
+      "id": 331,
       "type": "walker.pedestrian.0013",
       "location": {
         "x": -38.586036682128906,
@@ -5140,7 +4309,7 @@
       }
     },
     {
-      "id": 731,
+      "id": 332,
       "type": "walker.pedestrian.0014",
       "location": {
         "x": -29.156574249267578,
@@ -5226,12 +4395,12 @@
       }
     },
     {
-      "id": 732,
+      "id": 333,
       "type": "walker.pedestrian.0015",
       "location": {
         "x": 6.653878211975098,
         "y": -89.321533203125,
-        "z": 36.71718978881836
+        "z": 36.116249084472656
       },
       "rotation": {
         "pitch": 0.0,
@@ -5298,37 +4467,23 @@
       }
     },
     {
-      "id": 733,
+      "id": 334,
       "type": "vehicle.volkswagen.t2_2021",
       "location": {
-        "x": -17.037931442260742,
-        "y": -144.78253173828125,
-        "z": 35.37601852416992
+        "x": -17.35911750793457,
+        "y": -141.5997314453125,
+        "z": 35.5
       },
       "rotation": {
-        "pitch": -0.15639765560626984,
-        "yaw": 107.90705108642578,
-        "roll": 0.0048516602255403996
+        "pitch": 0.0,
+        "yaw": 103.43700408935547,
+        "roll": 0.0
       },
       "speed_km_h": 100.0,
       "idle_time_s": 0.0,
       "waypoints": [
         {
           "index": 1,
-          "location": {
-            "x": -17.725854873657227,
-            "y": -140.92855834960938,
-            "z": 35.29999923706055
-          },
-          "yaw": 95.9715576171875,
-          "speed_km_h": 100.0,
-          "speed_deviation_km_h": 0,
-          "idle_time_s": 0.0,
-          "auto_generated": false,
-          "is_destination": false
-        },
-        {
-          "index": 2,
           "location": {
             "x": -18.299304962158203,
             "y": -135.06906127929688,
@@ -5342,7 +4497,7 @@
           "is_destination": false
         },
         {
-          "index": 3,
+          "index": 2,
           "location": {
             "x": -17.78646469116211,
             "y": -127.3941879272461,
@@ -5356,7 +4511,7 @@
           "is_destination": false
         },
         {
-          "index": 4,
+          "index": 3,
           "location": {
             "x": -14.981144905090332,
             "y": -119.71416473388672,
@@ -5370,7 +4525,7 @@
           "is_destination": false
         },
         {
-          "index": 5,
+          "index": 4,
           "location": {
             "x": -11.610880851745605,
             "y": -116.3570556640625,
@@ -5384,7 +4539,7 @@
           "is_destination": false
         },
         {
-          "index": 6,
+          "index": 5,
           "location": {
             "x": -7.5722174644470215,
             "y": -114.19599151611328,
@@ -5398,7 +4553,7 @@
           "is_destination": false
         },
         {
-          "index": 7,
+          "index": 6,
           "location": {
             "x": -3.0854015350341797,
             "y": -112.22782897949219,
@@ -5412,7 +4567,7 @@
           "is_destination": false
         },
         {
-          "index": 8,
+          "index": 7,
           "location": {
             "x": 1.1906464099884033,
             "y": -110.95779418945312,
@@ -5426,7 +4581,7 @@
           "is_destination": false
         },
         {
-          "index": 9,
+          "index": 8,
           "location": {
             "x": 6.3974456787109375,
             "y": -110.98360443115234,
@@ -5440,7 +4595,7 @@
           "is_destination": false
         },
         {
-          "index": 10,
+          "index": 9,
           "location": {
             "x": 11.843646049499512,
             "y": -112.00817108154297,
@@ -5454,7 +4609,7 @@
           "is_destination": false
         },
         {
-          "index": 11,
+          "index": 10,
           "location": {
             "x": 16.685272216796875,
             "y": -114.58112335205078,
@@ -5468,7 +4623,7 @@
           "is_destination": false
         },
         {
-          "index": 12,
+          "index": 11,
           "location": {
             "x": 20.82552719116211,
             "y": -118.31754302978516,
@@ -5482,7 +4637,7 @@
           "is_destination": false
         },
         {
-          "index": 13,
+          "index": 12,
           "location": {
             "x": 23.227018356323242,
             "y": -122.1864242553711,
@@ -5496,7 +4651,7 @@
           "is_destination": false
         },
         {
-          "index": 14,
+          "index": 13,
           "location": {
             "x": 24.316251754760742,
             "y": -125.46709442138672,
@@ -5510,7 +4665,7 @@
           "is_destination": false
         },
         {
-          "index": 15,
+          "index": 14,
           "location": {
             "x": 25.55406951904297,
             "y": -131.72764587402344,
@@ -5524,7 +4679,7 @@
           "is_destination": false
         },
         {
-          "index": 16,
+          "index": 15,
           "location": {
             "x": 28.015270233154297,
             "y": -150.5033721923828,
@@ -5568,16 +4723,16 @@
       }
     },
     {
-      "id": 734,
+      "id": 335,
       "type": "vehicle.harley-davidson.low_rider",
       "location": {
-        "x": -18.02311897277832,
-        "y": -140.73397827148438,
-        "z": 35.43793869018555
+        "x": -18.16583251953125,
+        "y": -136.8986358642578,
+        "z": 35.499961853027344
       },
       "rotation": {
         "pitch": 0.0,
-        "yaw": 95.64842224121094,
+        "yaw": 95.22005462646484,
         "roll": 0.0
       },
       "speed_km_h": 100.0,
@@ -5970,15 +5125,15 @@
       "destination_speed_km_h": 50.0,
       "trigger": {
         "center": {
-          "x": -30.27228114036775,
-          "y": -115.61115069176954,
-          "z": 35.099979400634766
+          "x": -31.4531965277175,
+          "y": -114.95203456683842,
+          "z": 35.100135803222656
         },
         "radius": 6.4
       }
     },
     {
-      "id": 735,
+      "id": 336,
       "type": "vehicle.mitsubishi.fusorosa",
       "location": {
         "x": 153.467529296875,
@@ -6750,21 +5905,852 @@
         },
         "radius": 3.2
       }
+    },
+    {
+      "id": 337,
+      "type": "walker.pedestrian.0041",
+      "location": {
+        "x": -5.561142921447754,
+        "y": 60.416141510009766,
+        "z": 35.37281036376953
+      },
+      "rotation": {
+        "pitch": 0.0,
+        "yaw": -93.52764129638672,
+        "roll": 0.0
+      },
+      "speed_km_h": 5,
+      "idle_time_s": 0.0,
+      "waypoints": [
+        {
+          "index": 1,
+          "location": {
+            "x": -6.663697242736816,
+            "y": 42.53115463256836,
+            "z": 34.699920654296875
+          },
+          "yaw": null,
+          "speed_km_h": 5.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 2,
+          "location": {
+            "x": -17.498476230648002,
+            "y": 42.39582736261279,
+            "z": 35.14683151245117
+          },
+          "yaw": null,
+          "speed_km_h": 5.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": "destination",
+          "location": {
+            "x": -37.73667277914501,
+            "y": 44.038283377281445,
+            "z": 35.31527328491211
+          },
+          "yaw": null,
+          "speed_km_h": 5.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": true
+        }
+      ],
+      "ignore_traffic_lights": false,
+      "ignore_stop_signs": false,
+      "ignore_vehicles": false,
+      "destination_speed_km_h": 5.0,
+      "trigger": {
+        "center": {
+          "x": -23.608799001998058,
+          "y": 50.80432419418322,
+          "z": 36.462196350097656
+        },
+        "radius": 2.5
+      }
+    },
+    {
+      "id": 340,
+      "type": "vehicle.tesla.cybertruck",
+      "location": {
+        "x": 36.72895812988281,
+        "y": 114.63140106201172,
+        "z": 34.100040435791016
+      },
+      "rotation": {
+        "pitch": 0.0,
+        "yaw": 125.81784057617188,
+        "roll": 0.0
+      },
+      "speed_km_h": 50.0,
+      "idle_time_s": 0.0,
+      "waypoints": [
+        {
+          "index": 1,
+          "location": {
+            "x": 32.99741473990977,
+            "y": 119.64688203555531,
+            "z": 33.9000129699707
+          },
+          "yaw": 125.01884460449219,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 2,
+          "location": {
+            "x": 29.248130661863645,
+            "y": 121.88638723860437,
+            "z": 33.9000129699707
+          },
+          "yaw": 129.39242553710938,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 3,
+          "location": {
+            "x": 26.2389125639449,
+            "y": 123.36329250068482,
+            "z": 33.9000129699707
+          },
+          "yaw": 143.54635620117188,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 4,
+          "location": {
+            "x": 23.88241195678711,
+            "y": 124.79347229003906,
+            "z": 33.91783142089844
+          },
+          "yaw": 144.4998321533203,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 5,
+          "location": {
+            "x": 20.598766326904297,
+            "y": 127.47451782226562,
+            "z": 33.96923828125
+          },
+          "yaw": 133.6005096435547,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 6,
+          "location": {
+            "x": 18.69573402404785,
+            "y": 130.0258331298828,
+            "z": 33.960174560546875
+          },
+          "yaw": 122.78832244873047,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 7,
+          "location": {
+            "x": 17.16559410095215,
+            "y": 133.78065490722656,
+            "z": 33.944705963134766
+          },
+          "yaw": 99.20732116699219,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 8,
+          "location": {
+            "x": 16.739334106445312,
+            "y": 137.611328125,
+            "z": 33.92902374267578
+          },
+          "yaw": 87.40755462646484,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 9,
+          "location": {
+            "x": 17.531442642211914,
+            "y": 141.8624267578125,
+            "z": 33.91388702392578
+          },
+          "yaw": 68.0151138305664,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 10,
+          "location": {
+            "x": 19.737878799438477,
+            "y": 147.17457580566406,
+            "z": 33.90212631225586
+          },
+          "yaw": 68.3844223022461,
+          "speed_km_h": 30.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 11,
+          "location": {
+            "x": 28.253881454467773,
+            "y": 168.31173706054688,
+            "z": 33.90037155151367
+          },
+          "yaw": 67.69851684570312,
+          "speed_km_h": 30.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 12,
+          "location": {
+            "x": 46.83887481689453,
+            "y": 205.58815002441406,
+            "z": 33.9636116027832
+          },
+          "yaw": 69.24317169189453,
+          "speed_km_h": 30.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 13,
+          "location": {
+            "x": 54.637603759765625,
+            "y": 225.3573760986328,
+            "z": 33.89997863769531
+          },
+          "yaw": 68.0810317993164,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 14,
+          "location": {
+            "x": 57.683876037597656,
+            "y": 232.9015350341797,
+            "z": 35.96013641357422
+          },
+          "yaw": 67.94364166259766,
+          "speed_km_h": 30.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 15,
+          "location": {
+            "x": 72.058837890625,
+            "y": 268.62713623046875,
+            "z": 33.900020599365234
+          },
+          "yaw": 68.15658569335938,
+          "speed_km_h": 70.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 16,
+          "location": {
+            "x": 77.96481323242188,
+            "y": 283.2938232421875,
+            "z": 33.919002532958984
+          },
+          "yaw": 68.1426010131836,
+          "speed_km_h": 70.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 17,
+          "location": {
+            "x": 90.1415023803711,
+            "y": 313.4317321777344,
+            "z": 34.12068176269531
+          },
+          "yaw": 68.05311584472656,
+          "speed_km_h": 100.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 18,
+          "location": {
+            "x": 103.21997833251953,
+            "y": 345.9151611328125,
+            "z": 34.38169860839844
+          },
+          "yaw": 67.95159912109375,
+          "speed_km_h": 100.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 19,
+          "location": {
+            "x": 115.99407196044922,
+            "y": 376.6375427246094,
+            "z": 34.68654251098633
+          },
+          "yaw": 67.22361755371094,
+          "speed_km_h": 100.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 20,
+          "location": {
+            "x": 127.60234832763672,
+            "y": 403.546142578125,
+            "z": 34.35109329223633
+          },
+          "yaw": 65.72936248779297,
+          "speed_km_h": 100.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 21,
+          "location": {
+            "x": 133.6608123779297,
+            "y": 416.48480224609375,
+            "z": 34.44784927368164
+          },
+          "yaw": 64.19453430175781,
+          "speed_km_h": 100.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 22,
+          "location": {
+            "x": 141.2766876220703,
+            "y": 429.8562927246094,
+            "z": 34.599979400634766
+          },
+          "yaw": 57.02653503417969,
+          "speed_km_h": 100.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 23,
+          "location": {
+            "x": 151.04832458496094,
+            "y": 444.39508056640625,
+            "z": 34.59996032714844
+          },
+          "yaw": 67.98947143554688,
+          "speed_km_h": 100.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 24,
+          "location": {
+            "x": 170.33676147460938,
+            "y": 474.2215270996094,
+            "z": 34.676387786865234
+          },
+          "yaw": 56.70943832397461,
+          "speed_km_h": 100.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 25,
+          "location": {
+            "x": 184.3705596923828,
+            "y": 495.51531982421875,
+            "z": 34.79982376098633
+          },
+          "yaw": 56.83481216430664,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 26,
+          "location": {
+            "x": 196.9507598876953,
+            "y": 514.7879638671875,
+            "z": 34.76376724243164
+          },
+          "yaw": 56.66796875,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 27,
+          "location": {
+            "x": 207.6497344970703,
+            "y": 531.0318603515625,
+            "z": 34.522850036621094
+          },
+          "yaw": 56.57265853881836,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 28,
+          "location": {
+            "x": 214.28265380859375,
+            "y": 541.0879516601562,
+            "z": 34.50599670410156
+          },
+          "yaw": 56.6182861328125,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 29,
+          "location": {
+            "x": 222.2140350341797,
+            "y": 551.922119140625,
+            "z": 34.65064239501953
+          },
+          "yaw": 42.95484161376953,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 30,
+          "location": {
+            "x": 226.7109375,
+            "y": 553.7088623046875,
+            "z": 34.668025970458984
+          },
+          "yaw": 0.34064891934394836,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 31,
+          "location": {
+            "x": 232.22373962402344,
+            "y": 551.8624267578125,
+            "z": 34.52630615234375
+          },
+          "yaw": -30.918027877807617,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 32,
+          "location": {
+            "x": 235.51889038085938,
+            "y": 548.4819946289062,
+            "z": 34.386444091796875
+          },
+          "yaw": -58.6895866394043,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 33,
+          "location": {
+            "x": 237.45895385742188,
+            "y": 543.3712768554688,
+            "z": 34.14585876464844
+          },
+          "yaw": -81.06143188476562,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 34,
+          "location": {
+            "x": 237.67613220214844,
+            "y": 536.3379516601562,
+            "z": 33.996700286865234
+          },
+          "yaw": -110.2036361694336,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 35,
+          "location": {
+            "x": 235.94216918945312,
+            "y": 531.6713256835938,
+            "z": 33.92380905151367
+          },
+          "yaw": -110.93639373779297,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 36,
+          "location": {
+            "x": 232.94418334960938,
+            "y": 525.2005004882812,
+            "z": 33.819705963134766
+          },
+          "yaw": -119.2293472290039,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 37,
+          "location": {
+            "x": 230.58126831054688,
+            "y": 521.5374755859375,
+            "z": 33.760467529296875
+          },
+          "yaw": -123.54259490966797,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 38,
+          "location": {
+            "x": 225.83834838867188,
+            "y": 514.384765625,
+            "z": 33.88388442993164
+          },
+          "yaw": -123.52960968017578,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 39,
+          "location": {
+            "x": 220.4461212158203,
+            "y": 500.462890625,
+            "z": 34.01620864868164
+          },
+          "yaw": -123.64195251464844,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 40,
+          "location": {
+            "x": 214.8116455078125,
+            "y": 486.12615966796875,
+            "z": 34.142208099365234
+          },
+          "yaw": -123.8026123046875,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 41,
+          "location": {
+            "x": 202.4968719482422,
+            "y": 467.7049560546875,
+            "z": 34.24169921875
+          },
+          "yaw": -123.64290618896484,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 42,
+          "location": {
+            "x": 195.20944213867188,
+            "y": 456.7911071777344,
+            "z": 34.30134582519531
+          },
+          "yaw": -123.62718200683594,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 43,
+          "location": {
+            "x": 186.91250610351562,
+            "y": 444.2907409667969,
+            "z": 34.30988311767578
+          },
+          "yaw": -123.7260971069336,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 44,
+          "location": {
+            "x": 182.15213012695312,
+            "y": 437.08465576171875,
+            "z": 34.30999755859375
+          },
+          "yaw": -122.37639617919922,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 45,
+          "location": {
+            "x": 179.02407836914062,
+            "y": 430.59619140625,
+            "z": 34.30999755859375
+          },
+          "yaw": -103.90168762207031,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 46,
+          "location": {
+            "x": 178.5914306640625,
+            "y": 425.6269836425781,
+            "z": 34.27792739868164
+          },
+          "yaw": -87.43663787841797,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 47,
+          "location": {
+            "x": 180.69422912597656,
+            "y": 419.8522644042969,
+            "z": 34.202598571777344
+          },
+          "yaw": -52.495521545410156,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 48,
+          "location": {
+            "x": 185.26060485839844,
+            "y": 415.8548583984375,
+            "z": 34.164451599121094
+          },
+          "yaw": 320.13726806640625,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 49,
+          "location": {
+            "x": 192.3103790283203,
+            "y": 410.7387390136719,
+            "z": 34.10515594482422
+          },
+          "yaw": 328.186279296875,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 50,
+          "location": {
+            "x": 205.615234375,
+            "y": 403.59259033203125,
+            "z": 34.08001708984375
+          },
+          "yaw": 334.1387634277344,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": 51,
+          "location": {
+            "x": 223.89883422851562,
+            "y": 394.9016418457031,
+            "z": 34.29484176635742
+          },
+          "yaw": 335.2138671875,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": false
+        },
+        {
+          "index": "destination",
+          "location": {
+            "x": 245.72149658203125,
+            "y": 384.69866943359375,
+            "z": 33.91316223144531
+          },
+          "yaw": 334.7459716796875,
+          "speed_km_h": 50.0,
+          "speed_deviation_km_h": 0,
+          "idle_time_s": 0.0,
+          "auto_generated": false,
+          "is_destination": true
+        }
+      ],
+      "ignore_traffic_lights": false,
+      "ignore_stop_signs": false,
+      "ignore_vehicles": true,
+      "max_lat_acc": 3000.0,
+      "destination_speed_km_h": 50.0,
+      "trigger": {
+        "center": {
+          "x": 8.489182868361924,
+          "y": 118.59777382033975,
+          "z": 34.030818939208984
+        },
+        "radius": 5.0
+      }
     }
   ],
-  "timestamp": 1782741713.274644,
+  "timestamp": 1783874277.2902057,
   "map_name": "tartu_demo",
   "ego_vehicle": {
     "type": "vehicle.lexus.utlexus",
     "location": {
-      "x": -28.11912727355957,
-      "y": 50.986854553222656,
-      "z": 37.13945007324219
+      "x": -27.27976417541504,
+      "y": 50.947967529296875,
+      "z": 35.4151725769043
     },
     "rotation": {
-      "pitch": -2.0230062007904053,
-      "yaw": -1.53955078125,
-      "roll": 0.1407524049282074
+      "pitch": 0.0,
+      "yaw": -1.8782581090927124,
+      "roll": 0.0
     },
     "role": "ego_vehicle",
     "ignore_traffic_lights": false,
@@ -8861,7 +8847,7 @@
       },
       "radius": 6.0,
       "ids_live": [
-        359
+        79
       ],
       "ids_reference": [
         22
@@ -8914,8 +8900,8 @@
       },
       "radius": 6.0,
       "ids_live": [
-        379,
-        389
+        99,
+        109
       ],
       "ids_reference": [
         42,
@@ -8949,8 +8935,8 @@
       },
       "radius": 6.0,
       "ids_live": [
-        381,
-        382
+        101,
+        102
       ],
       "ids_reference": [
         44,
@@ -8984,10 +8970,10 @@
       },
       "radius": 6.0,
       "ids_live": [
-        432,
-        433,
-        434,
-        439
+        152,
+        153,
+        154,
+        159
       ],
       "ids_reference": [
         95,
@@ -9058,8 +9044,8 @@
       },
       "radius": 6.0,
       "ids_live": [
-        483,
-        484
+        203,
+        204
       ],
       "ids_reference": [
         150,
@@ -9158,7 +9144,7 @@
       },
       "radius": 6.0,
       "ids_live": [
-        345
+        65
       ],
       "ids_reference": [
         65
@@ -9191,8 +9177,8 @@
       },
       "radius": 6.0,
       "ids_live": [
-        346,
-        347
+        66,
+        67
       ],
       "ids_reference": [
         66,
@@ -9231,8 +9217,8 @@
       },
       "radius": 6.0,
       "ids_live": [
-        360,
-        361
+        80,
+        81
       ],
       "ids_reference": [
         80,
@@ -9276,7 +9262,7 @@
       },
       "radius": 6.0,
       "ids_live": [
-        371
+        91
       ],
       "ids_reference": [
         91
@@ -9309,8 +9295,8 @@
       },
       "radius": 6.0,
       "ids_live": [
-        372,
-        373
+        92,
+        93
       ],
       "ids_reference": [
         92,
@@ -9354,8 +9340,8 @@
       },
       "radius": 6.0,
       "ids_live": [
-        445,
-        446
+        165,
+        166
       ],
       "ids_reference": [
         165,
@@ -9389,8 +9375,8 @@
       },
       "radius": 6.0,
       "ids_live": [
-        447,
-        448
+        167,
+        168
       ],
       "ids_reference": [
         167,
@@ -9424,8 +9410,8 @@
       },
       "radius": 6.0,
       "ids_live": [
-        331,
-        333
+        51,
+        53
       ],
       "ids_reference": [
         51,
@@ -9459,8 +9445,8 @@
       },
       "radius": 6.0,
       "ids_live": [
-        335,
-        337
+        55,
+        57
       ],
       "ids_reference": [
         55,
@@ -9494,9 +9480,9 @@
       },
       "radius": 6.0,
       "ids_live": [
-        466,
-        469,
-        482
+        186,
+        189,
+        202
       ],
       "ids_reference": [
         186,
@@ -9536,8 +9522,8 @@
       },
       "radius": 6.0,
       "ids_live": [
-        449,
-        488
+        169,
+        208
       ],
       "ids_reference": [
         449,
@@ -9576,9 +9562,9 @@
       },
       "radius": 6.0,
       "ids_live": [
-        332,
-        334,
-        336
+        52,
+        54,
+        56
       ],
       "ids_reference": [
         332,
