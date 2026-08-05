@@ -150,7 +150,7 @@ def _is_pedestrian_actor(processor, actor_id):
             return actor.type_id.startswith('walker.')
     return False
 
-def _adjust_pedestrian_spawn_orientation(processor, actor_id):
+def _adjust_pedestrian_spawn_orientation(processor, actor_id: int) -> None:
     """Rotate a pedestrian to face its first waypoint."""
     if not processor._is_pedestrian_actor(actor_id):
         return
@@ -168,15 +168,31 @@ def _adjust_pedestrian_spawn_orientation(processor, actor_id):
     if vehicle is None:
         return
 
-    vehicle_loc = vehicle.get_location()
-    dx = first_wp['x'] - vehicle_loc.x
-    dy = first_wp['y'] - vehicle_loc.y
+    # Base the write on the editor's own last-commanded transform (the same
+    # cache the save path trusts), NOT a live get_transform() read-back: in
+    # async mode the live read returns the last server snapshot, which can
+    # still show a mid-gesture position — e.g. the +500 m raycast lift at
+    # drag-end — and writing that back parked the walker in the sky and
+    # clobbered every undo. Live read is only a fallback for actors never
+    # placed through a command (load/spawn/move all populate the cache).
+    base_transform = processor.vehicle_transforms.get(actor_id)
+    if base_transform is None:
+        base_transform = vehicle.get_transform()
+
+    dx = first_wp['x'] - base_transform.location.x
+    dy = first_wp['y'] - base_transform.location.y
     if abs(dx) < 1e-3 and abs(dy) < 1e-3:
         return
 
     yaw = math.degrees(math.atan2(dy, dx))
-    transform = vehicle.get_transform()
-    transform.rotation.yaw = yaw
+    transform = carla.Transform(
+        base_transform.location,
+        carla.Rotation(
+            pitch=base_transform.rotation.pitch,
+            yaw=yaw,
+            roll=base_transform.rotation.roll,
+        ),
+    )
     vehicle.set_transform(transform)
     # Persist the computed heading so it survives saving: the save path reads
     # processor.vehicle_transforms first (see _build_vehicle_snapshot), so without this
@@ -563,7 +579,15 @@ def stop_vehicle_movement(processor):
                     corrected_y = lane_result['y']
                     corrected_rotation = carla.Rotation(pitch=0.0, yaw=lane_result['yaw'], roll=0.0)
 
-            # Temporarily lift actor out of the raycast path
+            # Temporarily lift the actor out of the raycast path. The lift is
+            # load-bearing for walkers too, not just the vehicle try_spawn
+            # probe: an in-place walker yields label-NONE ray hits ~0.7 m
+            # ABOVE its bbox head (outside the exclusion band), which then
+            # win as "ground" (+2 m placements, measured live 2026-08-05 at
+            # the Town02 probe spot). The lift landing in a server snapshot
+            # is harmless since fix-27: the post-move heading adjust writes
+            # from the vehicle_transforms cache, never a live get_transform()
+            # read-back, so nothing re-applies the lift.
             original_transform = actor.get_transform()
             lifted_actor = False
             if original_transform:
