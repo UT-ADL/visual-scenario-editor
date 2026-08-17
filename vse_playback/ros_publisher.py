@@ -1,7 +1,8 @@
 """Forked ROS plan-publisher process (moved verbatim from vse_play.py).
 
 _ros_plan_publisher_process is a multiprocessing target and must remain a
-module-level function. AGENT_DEBUG gates its diagnostics.
+module-level function. AGENT_DEBUG gates its diagnostics (documented in
+docs/vse_technical_notes.md).
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from srunner.tools.route_manipulation import downsample_route, interpolate_traje
 
 # Debug toggle for the forked CARLA Minimal Agent publisher process. When True,
 # _ros_plan_publisher_process emits step markers and surfaces the agent's own
-# rospy.loginfo to stderr. Set False to silence.
+# rospy.loginfo to stderr. Set False to silence. See docs/vse_technical_notes.md.
 AGENT_DEBUG = True
 
 

@@ -825,7 +825,8 @@ class MiniRunner:
 
         # Drive the criteria to a terminal status before reading them. The runner loop breaks on
         # ego arrival without ticking the scenario tree to completion, so py_trees never calls
-        # terminate() on the criteria and they stay at their birth value "INIT".
+        # terminate() on the criteria and they stay at their birth value "INIT". See
+        # docs/vse_technical_notes.md ("Criteria finalization & result label").
         self._finalize_ego_criteria(ego_criteria, reason)
 
         result_label = self._resolve_result_label(reason, ego_criteria)
@@ -838,7 +839,8 @@ class MiniRunner:
         proxy = _EgoCriteriaProxy(self._scenario, ego_criteria)
         # scenario.other_actors holds only walkers (vehicles live in _vehicle_actors); the writer
         # lists them as separate "NPC vehicles" / "Pedestrians" groups, so other_actors stays
-        # empty here. Walker slots can be None after a respawn — filter them.
+        # empty here. Walker slots can be None after a respawn — filter them. The actor lists are
+        # ignored by tools/regress/normalize_result.py, so this is baseline-safe.
         stub = SimpleNamespace(
             scenario=proxy,
             scenario_tree=self._scenario.scenario_tree,
@@ -873,7 +875,8 @@ class MiniRunner:
 
         - On ego arrival, credit RouteCompletionTest as complete (100% / SUCCESS). Autoware Mini
           stops a few metres short of the final waypoint, so the >99% gate never trips even though
-          the ego reached the destination (within the arrival radius).
+          the ego reached the destination (within the arrival radius). See
+          docs/vse_technical_notes.md.
         - Then terminate() every ego criterion: the base Criterion.terminate flips remaining
           INIT/RUNNING criteria (the no-violation detectors) to SUCCESS; criteria that already
           failed stay FAILURE, and RouteCompletionTest (if not credited above, i.e. the ego did not

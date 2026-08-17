@@ -23,17 +23,32 @@ Body adapted from scenario_runner
 ``srunner/scenariomanager/scenarioatomics/atomic_criteria.py``
 (``RunningRedLightTest.get_traffic_light_waypoints``); the sole functional change
 is guarding the empty-``next()`` list access.
+
+fix-28: ``update`` is likewise overridden with a copy of the fork's body
+(``RunningRedLightTest.update``, atomic_criteria.py lines 1659-1749); the sole
+change is reading the ego's bounding-box extent through
+``vse_common.actor_cache.cached_bounding_box`` — on CARLA 0.9.16 the inherited
+body's raw ``self.actor.bounding_box`` read is a blocking ~11 ms game-thread RPC
+issued once per behavior-tree tick for the entire armed run. The fork's and stock
+master's ``update`` bodies are functionally identical (line wrapping aside), so
+playback parity holds against both, as with the waypoints override above.
 """
 
 from __future__ import annotations
 
 import numpy as np
+import py_trees
 
 import carla
 
+from srunner.scenariomanager.carla_data_provider import CarlaDataProvider
 from srunner.scenariomanager.scenarioatomics.atomic_criteria import (
     RunningRedLightTest as _SrunnerRunningRedLightTest,
 )
+from srunner.scenariomanager.timer import GameTime
+from srunner.scenariomanager.traffic_events import TrafficEvent, TrafficEventType
+
+from vse_common.actor_cache import cached_bounding_box
 
 # carla.Waypoint.is_intersection (0.9.15) was renamed is_junction (0.9.16); same
 # value. Resolve once: prefer the fork's original name for byte-identical parity,
@@ -49,10 +64,110 @@ def _wp_is_junction(waypoint) -> bool:
 class GuardedRunningRedLightTest(_SrunnerRunningRedLightTest):
     """RunningRedLightTest that tolerates traffic-light lanes with no successor.
 
-    Overrides only ``get_traffic_light_waypoints`` to guard the empty-``next()``
-    list access that raises ``IndexError`` in stock ScenarioRunner. Everything else
-    (``__init__``, ``update``, scoring) is inherited unchanged.
+    Overrides ``get_traffic_light_waypoints`` to guard the empty-``next()`` list
+    access that raises ``IndexError`` in stock ScenarioRunner, and ``update`` to
+    read the ego bounding box through the client cache (fix-28; a raw read is a
+    blocking per-tick RPC on CARLA >= 0.9.16). Everything else (``__init__``,
+    scoring) is inherited unchanged, and both overrides are behavior-identical
+    copies of the inherited bodies.
     """
+
+    # fix-28 provenance: copied verbatim from scenario_runner
+    # srunner/scenariomanager/scenarioatomics/atomic_criteria.py
+    # (RunningRedLightTest.update, lines 1659-1749; fork and stock bodies are functionally
+    # identical). Sole change: the per-tick raw ``self.actor.bounding_box`` read (a blocking
+    # ~11 ms RPC on CARLA >= 0.9.16) goes through cached_bounding_box.
+    def update(self):
+        """
+        Check if the actor is running a red light
+        """
+        new_status = py_trees.common.Status.RUNNING
+
+        transform = CarlaDataProvider.get_transform(self.actor)
+        location = transform.location
+        if location is None:
+            return new_status
+
+        veh_extent = cached_bounding_box(self.actor).extent.x  # fix-28: cached (was self.actor.bounding_box)
+
+        tail_close_pt = self.rotate_point(carla.Vector3D(-0.8 * veh_extent, 0, 0), transform.rotation.yaw)
+        tail_close_pt = location + carla.Location(tail_close_pt)
+
+        tail_far_pt = self.rotate_point(carla.Vector3D(-veh_extent - 1, 0, 0), transform.rotation.yaw)
+        tail_far_pt = location + carla.Location(tail_far_pt)
+
+        for traffic_light, center, waypoints in self._list_traffic_lights:
+
+            if self.debug:
+                z = 2.1
+                if traffic_light.state == carla.TrafficLightState.Red:
+                    color = carla.Color(155, 0, 0)
+                elif traffic_light.state == carla.TrafficLightState.Green:
+                    color = carla.Color(0, 155, 0)
+                else:
+                    color = carla.Color(155, 155, 0)
+                self._world.debug.draw_point(center + carla.Location(z=z), size=0.2, color=color, life_time=0.01)
+                for wp in waypoints:
+                    text = "{}.{}".format(wp.road_id, wp.lane_id)
+                    self._world.debug.draw_string(
+                        wp.transform.location + carla.Location(x=1, z=z), text, color=color, life_time=0.01)
+                    self._world.debug.draw_point(
+                        wp.transform.location + carla.Location(z=z), size=0.1, color=color, life_time=0.01)
+
+            center_loc = carla.Location(center)
+
+            if self._last_red_light_id and self._last_red_light_id == traffic_light.id:
+                continue
+            if center_loc.distance(location) > self.DISTANCE_LIGHT:
+                continue
+            if traffic_light.state != carla.TrafficLightState.Red:
+                continue
+
+            for wp in waypoints:
+
+                tail_wp = self._map.get_waypoint(tail_far_pt)
+
+                # Calculate the dot product (Might be unscaled, as only its sign is important)
+                ve_dir = CarlaDataProvider.get_transform(self.actor).get_forward_vector()
+                wp_dir = wp.transform.get_forward_vector()
+
+                # Check the lane until all the "tail" has passed
+                if tail_wp.road_id == wp.road_id and tail_wp.lane_id == wp.lane_id and ve_dir.dot(wp_dir) > 0:
+                    # This light is red and is affecting our lane
+                    yaw_wp = wp.transform.rotation.yaw
+                    lane_width = wp.lane_width
+                    location_wp = wp.transform.location
+
+                    lft_lane_wp = self.rotate_point(carla.Vector3D(0.6 * lane_width, 0, 0), yaw_wp + 90)
+                    lft_lane_wp = location_wp + carla.Location(lft_lane_wp)
+                    rgt_lane_wp = self.rotate_point(carla.Vector3D(0.6 * lane_width, 0, 0), yaw_wp - 90)
+                    rgt_lane_wp = location_wp + carla.Location(rgt_lane_wp)
+
+                    # Is the vehicle traversing the stop line?
+                    if self.is_vehicle_crossing_line((tail_close_pt, tail_far_pt), (lft_lane_wp, rgt_lane_wp)):
+
+                        self.test_status = "FAILURE"
+                        self.actual_value += 1
+                        location = traffic_light.get_transform().location
+                        red_light_event = TrafficEvent(event_type=TrafficEventType.TRAFFIC_LIGHT_INFRACTION, frame=GameTime.get_frame())
+                        red_light_event.set_message(
+                            "Agent ran a red light {} at (x={}, y={}, z={})".format(
+                                traffic_light.id,
+                                round(location.x, 3),
+                                round(location.y, 3),
+                                round(location.z, 3)))
+                        red_light_event.set_dict({'id': traffic_light.id, 'location': location})
+
+                        self.events.append(red_light_event)
+                        self._last_red_light_id = traffic_light.id
+                        break
+
+        if self._terminate_on_failure and (self.test_status == "FAILURE"):
+            new_status = py_trees.common.Status.FAILURE
+
+        self.logger.debug("%s.update()[%s->%s]" % (self.__class__.__name__, self.status, new_status))
+
+        return new_status
 
     def get_traffic_light_waypoints(self, traffic_light):
         """Return the trigger-area location and stop waypoints for a traffic light."""

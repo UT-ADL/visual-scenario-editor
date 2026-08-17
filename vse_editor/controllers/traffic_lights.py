@@ -7,7 +7,8 @@ All state lives on the processor/scene; the processor keeps one-line delegates
 (plus staticmethod aliases for the five self-less geometry helpers), so
 scenario_io's processor.* calls, undo/redo command reach-ins and
 hasattr-string sites are unchanged. The _compute_traffic_light_fingerprint
-alias and _normalize_traffic_light_fingerprint stay on the processor.
+alias and _normalize_traffic_light_fingerprint stay on the processor
+(tests/unit/test_fingerprint.py asserts identity/unbound arity).
 
 Contracts preserved verbatim: processor.traffic_lights is mutated in place
 (clear()+extend(), never rebound — WorldCoordinateDetector aliases the list);

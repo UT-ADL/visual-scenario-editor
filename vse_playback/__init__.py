@@ -5,7 +5,7 @@ guarantees SCENARIO_RUNNER_ROOT is on sys.path BEFORE any submodule imports
 srunner.* (Python runs a package's __init__ before its submodules).
 
 Layering: no module in this package may import pygame/pygame_gui or the
-editor (vse_editor, vse).
+editor (vse_editor, vse). See tools/checks/import_smoke.py.
 """
 
 import os

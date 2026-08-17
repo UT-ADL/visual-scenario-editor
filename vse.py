@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Visual Scenario Editor -- entrypoint shim.
 
-The implementation lives in the vse_editor/ package. This file stays at the
-repo root under this name because self-relaunch replays
-``[sys.executable] + sys.argv`` and callers import the module as ``vse``.
+The implementation lives in the vse_editor/ package (see the module map in
+docs/vse_technical_notes.md). This file stays at the repo root under this
+name because self-relaunch replays ``[sys.executable] + sys.argv`` and the
+tests/tooling import the module as ``vse``.
 """
 
 import sys
