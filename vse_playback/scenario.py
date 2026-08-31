@@ -123,6 +123,13 @@ _WALKER_COLOR_PALETTE: List[Tuple[int, int, int]] = [
     (255, 105, 180),
 ]
 
+# Ceiling on map.get_topology() size (lane-segment pairs) above which building srunner's
+# GlobalRoutePlanner for criteria-route interpolation is infeasible: GRP._build_topology()
+# samples the entire road network (tartu_large: 19,890 segments / 77 MB xodr -> multi-GB RAM,
+# never returns). Stock CARLA towns are in the hundreds. Tiled maps are already skipped via
+# is_large_map(); this ceiling catches huge NON-tiled maps that tile detection misses.
+_GRP_TOPOLOGY_MAX_SEGMENTS: int = 5000
+
 
 class vse_play(BasicScenario):
     def __init__(self, world, ego_vehicles, config, randomize=False, debug_mode=False,
@@ -753,9 +760,17 @@ class vse_play(BasicScenario):
         if destination_loc:
             self._ego_destination = destination_loc
 
+        # GRP-infeasible = tiled large map OR huge non-tiled map (topology above the ceiling);
+        # is_large_map() alone misses the latter (tile files are the wrong proxy for GRP cost).
+        grp_infeasible = self._large_map_active
+        if not grp_infeasible:
+            try:
+                grp_infeasible = len(self._map.get_topology()) > _GRP_TOPOLOGY_MAX_SEGMENTS
+            except Exception:
+                grp_infeasible = False
         should_interpolate = (
             len(keypoints) >= 2
-            and not (_is_large_map(self._map) and os.environ.get("VSE_FORCE_ROUTE_INTERPOLATION") != "1")
+            and not (grp_infeasible and os.environ.get("VSE_FORCE_ROUTE_INTERPOLATION") != "1")
         )
         if should_interpolate:
             # Interpolate at a coarse hop so InRouteTest's fixed 5-point look-ahead window spans more
@@ -773,7 +788,7 @@ class vse_play(BasicScenario):
                 if self._debug:
                     print(f"[CRITERIA] interpolate_trajectory failed for ego route: {exc}")
         elif len(keypoints) >= 2 and self._debug:
-            print("[CRITERIA] Large map active; skipping interpolate_trajectory for ego route")
+            print("[CRITERIA] Map too large for GlobalRoutePlanner; skipping interpolate_trajectory for ego route")
 
         if not route:
             route = [(tf, RoadOption.LANEFOLLOW) for tf in transforms]

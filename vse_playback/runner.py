@@ -1370,7 +1370,7 @@ class MiniRunner:
 
         if self._skip_route_interpolation:
             try:
-                self.log("Large map active; skipping road interpolation (using waypoint corridor order).")
+                self.log("Skipping road interpolation (default; set VSE_FORCE_ROUTE_INTERPOLATION=1 to enable); using waypoint corridor order.")
             except Exception:
                 pass
 

@@ -4,6 +4,7 @@ Moved verbatim from vse.py (step-36, Phase 7).
 """
 
 import os
+from typing import Any, Tuple
 
 import pygame
 
@@ -293,6 +294,96 @@ def _handle_keyup(editor, event):
         if editor.camera_processor:
             editor.camera_processor.end_manual_camera_free_look("keyboard_pan")
 
+def _handle_open_top_bar_dropdown_item_click(
+        editor: Any, pos: Tuple[int, int]) -> bool:
+    """Give open top-bar dropdown rows first chance to consume the click."""
+    # Check in reverse draw order so input priority stays aligned with the deferred overlay.
+    if getattr(editor, "agent_behavior_menu_open", False):
+        for behavior, rect in getattr(editor, "_agent_behavior_item_rects", {}).items():
+            if rect.collidepoint(pos):
+                editor.agent_behavior = behavior
+                editor._remember_last_agent(getattr(editor, "agent_path", None))
+                print(f"[Agent] Behavior set to: {behavior}")
+                editor.agent_behavior_menu_open = False
+                return True
+
+    if (getattr(editor, "agent_dropdown_open", False)
+            and getattr(editor, "agent_button_enabled", False)):
+        for item_rect, mode_key in getattr(editor, "_agent_dropdown_item_rects", []):
+            if not item_rect.collidepoint(pos):
+                continue
+            if mode_key == "custom":
+                existing = getattr(editor, "agent_path", None)
+                if existing and os.path.isfile(existing):
+                    editor.agent_mode = "custom"
+                    editor._remember_last_agent(existing)
+                    print(f"[Agent] Custom agent restored: {existing}")
+                else:
+                    picked = editor._prompt_agent_file_path()
+                    if picked:
+                        editor.agent_mode = "custom"
+                        editor._remember_last_agent(picked)
+                        print(f"[Agent] Custom agent selected: {picked}")
+                editor.agent_dropdown_open = False
+            elif mode_key == "autopilot":
+                editor.agent_mode = "autopilot"
+                editor._remember_last_agent()
+                print("[Agent] Mode set to: autopilot")
+                editor.agent_dropdown_open = False
+                editor.agent_behavior_menu_open = True
+            else:
+                editor.agent_mode = mode_key
+                editor._remember_last_agent()
+                print(f"[Agent] Mode set to: {mode_key}")
+                editor.agent_dropdown_open = False
+            editor.resolution_menu_open = False
+            editor.fps_menu_open = False
+            return True
+
+    if (getattr(editor, "npc_dropdown_open", False)
+            and getattr(editor, "npc_button_enabled", False)):
+        for item_rect, mode_key in getattr(editor, "_npc_dropdown_item_rects", []):
+            if item_rect.collidepoint(pos):
+                if editor.camera_processor:
+                    editor.camera_processor.vehicle_control_mode = mode_key
+                editor.vehicle_control_mode = mode_key
+                mode_label = "Simulated" if mode_key == "basic_agent" else "Scripted"
+                print(f"[NPC Control] Mode: {mode_key} ({mode_label})")
+                editor.npc_dropdown_open = False
+                editor.resolution_menu_open = False
+                editor.fps_menu_open = False
+                return True
+
+    if getattr(editor, "fps_menu_open", False) and editor._using_remote_server():
+        for rect, fps_value in editor.fps_option_rects:
+            if rect.collidepoint(pos):
+                editor._set_stream_fps(fps_value)
+                editor._close_all_dropdowns()
+                return True
+
+    if getattr(editor, "_culling_menu_open", False):
+        for rect, preset in editor._culling_option_rects:
+            if rect.collidepoint(pos):
+                editor._set_culling_distance(preset)  # applies, remembers, and closes dropdowns
+                return True
+
+    if getattr(editor, "resolution_menu_open", False):
+        for rect, option in editor.resolution_option_rects:
+            if rect.collidepoint(pos):
+                editor._set_stream_resolution(option)
+                editor._close_all_dropdowns()
+                return True
+
+    if getattr(editor, "play_camera_menu_open", False):
+        for rect, cam_mode in editor.play_camera_option_rects:
+            if rect.collidepoint(pos):
+                editor._set_play_camera_mode(cam_mode)
+                editor._close_all_dropdowns()
+                return True
+
+    return False
+
+
 def _handle_left_click(editor, pos, scenario_running):
     """Process left-click (button 1) interactions."""
     # A fresh press always starts unarmed: a stale *_drag_armed flag or
@@ -328,6 +419,9 @@ def _handle_left_click(editor, pos, scenario_running):
         if scenario_running:
             return True  # Help overlay disabled during playback
         editor.keyboard_help_visible = True
+        return True
+
+    if _handle_open_top_bar_dropdown_item_click(editor, pos):
         return True
 
     # Dismiss NPC driving mode dropdown if clicking outside it
@@ -431,34 +525,17 @@ def _handle_left_click(editor, pos, scenario_running):
         editor.fps_menu_open = False
         return True
 
-    for rect, cam_mode in editor.play_camera_option_rects:
-        if rect.collidepoint(pos):
-            editor._set_play_camera_mode(cam_mode)
-            editor._close_all_dropdowns()
-            return True
-
     if editor.play_camera_button_rect and editor.play_camera_button_rect.collidepoint(pos):
         was_open = editor.play_camera_menu_open
         editor._close_all_dropdowns()
         editor.play_camera_menu_open = not was_open
         return True
 
-    for rect, option in editor.resolution_option_rects:
-        if rect.collidepoint(pos):
-            editor._set_stream_resolution(option)
-            editor._close_all_dropdowns()
-            return True
-
     if editor.resolution_button_rect and editor.resolution_button_rect.collidepoint(pos):
         was_open = editor.resolution_menu_open
         editor._close_all_dropdowns()
         editor.resolution_menu_open = not was_open
         return True
-
-    for rect, preset in editor._culling_option_rects:
-        if rect.collidepoint(pos):
-            editor._set_culling_distance(preset)  # applies, remembers, and closes dropdowns
-            return True
 
     if editor._culling_button_rect and editor._culling_button_rect.collidepoint(pos):
         # Only editable while VSE solely controls the sim and isn't playing; otherwise consume
@@ -470,12 +547,6 @@ def _handle_left_click(editor, pos, scenario_running):
         return True
 
     if editor._using_remote_server():
-        for rect, fps_value in editor.fps_option_rects:
-            if rect.collidepoint(pos):
-                editor._set_stream_fps(fps_value)
-                editor._close_all_dropdowns()
-                return True
-
         if editor.fps_button_rect and editor.fps_button_rect.collidepoint(pos):
             was_open = editor.fps_menu_open
             editor._close_all_dropdowns()
@@ -511,20 +582,6 @@ def _handle_left_click(editor, pos, scenario_running):
         editor.fps_menu_open = False
         return True
 
-    # NPC Driving Mode dropdown item clicks
-    if getattr(editor, "npc_dropdown_open", False) and getattr(editor, "npc_button_enabled", False):
-        for item_rect, mode_key in getattr(editor, "_npc_dropdown_item_rects", []):
-            if item_rect.collidepoint(pos):
-                if editor.camera_processor:
-                    editor.camera_processor.vehicle_control_mode = mode_key
-                editor.vehicle_control_mode = mode_key
-                mode_label = "Simulated" if mode_key == "basic_agent" else "Scripted"
-                print(f"[NPC Control] Mode: {mode_key} ({mode_label})")
-                editor.npc_dropdown_open = False
-                editor.resolution_menu_open = False
-                editor.fps_menu_open = False
-                return True
-
     # NPC Driving Mode button toggle
     if getattr(editor, 'npc_button_rect', None) and editor.npc_button_rect.collidepoint(pos):
         if getattr(editor, "npc_button_enabled", False):
@@ -534,48 +591,6 @@ def _handle_left_click(editor, pos, scenario_running):
         editor.resolution_menu_open = False
         editor.fps_menu_open = False
         return True
-
-    # Agent behavior menu clicks (shown after selecting Autopilot)
-    if getattr(editor, "agent_behavior_menu_open", False):
-        for bkey, brect in getattr(editor, "_agent_behavior_item_rects", {}).items():
-            if brect.collidepoint(pos):
-                editor.agent_behavior = bkey
-                editor._remember_last_agent(getattr(editor, "agent_path", None))
-                print(f"[Agent] Behavior set to: {bkey}")
-                editor.agent_behavior_menu_open = False
-                return True
-
-    # Agent dropdown item clicks (when dropdown is open)
-    if getattr(editor, "agent_dropdown_open", False) and getattr(editor, "agent_button_enabled", False):
-        for item_rect, mode_key in getattr(editor, "_agent_dropdown_item_rects", []):
-            if item_rect.collidepoint(pos):
-                if mode_key == "custom":
-                    existing = getattr(editor, "agent_path", None)
-                    if existing and os.path.isfile(existing):
-                        editor.agent_mode = "custom"
-                        editor._remember_last_agent(existing)
-                        print(f"[Agent] Custom agent restored: {existing}")
-                    else:
-                        picked = editor._prompt_agent_file_path()
-                        if picked:
-                            editor.agent_mode = "custom"
-                            editor._remember_last_agent(picked)
-                            print(f"[Agent] Custom agent selected: {picked}")
-                    editor.agent_dropdown_open = False
-                elif mode_key == "autopilot":
-                    editor.agent_mode = "autopilot"
-                    editor._remember_last_agent()
-                    print(f"[Agent] Mode set to: autopilot")
-                    editor.agent_dropdown_open = False
-                    editor.agent_behavior_menu_open = True
-                else:
-                    editor.agent_mode = mode_key
-                    editor._remember_last_agent()
-                    print(f"[Agent] Mode set to: {mode_key}")
-                    editor.agent_dropdown_open = False
-                editor.resolution_menu_open = False
-                editor.fps_menu_open = False
-                return True
 
     # "..." browse button click (change custom agent script)
     if (getattr(editor, 'agent_browse_button_rect', None)
