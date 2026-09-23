@@ -143,6 +143,37 @@ class CompositeCommand(Command):
     def get_description(self):
         return self.description
 
+class ClearWaypointsCommand(Command):
+    """Clear an actor's whole waypoint path so a fresh one can start; undo restores it.
+
+    Snapshot is taken at construction: the path-replacing flows (auto-route, restarting
+    waypoint creation) build this right before executing it.
+    """
+    def __init__(self, camera_processor, vehicle_id: int):
+        self.camera_processor = camera_processor
+        self.vehicle_id = vehicle_id
+        self.old_waypoints = clone_waypoint_sequence(
+            camera_processor.get_vehicle_waypoints(vehicle_id))
+        self.old_destination_speed = camera_processor.get_vehicle_destination_speed(vehicle_id)
+
+    def execute(self) -> bool:
+        self.camera_processor.set_vehicle_waypoints(self.vehicle_id, [])
+        self.camera_processor.clear_vehicle_destination_speed(self.vehicle_id)
+        return True
+
+    def undo(self) -> bool:
+        self.camera_processor.set_vehicle_waypoints(
+            self.vehicle_id, clone_waypoint_sequence(self.old_waypoints))
+        self.camera_processor.set_vehicle_destination_speed(
+            self.vehicle_id, self.old_destination_speed)
+        return True
+
+    def redo(self) -> bool:
+        return self.execute()
+
+    def get_description(self) -> str:
+        return f"Clear {len(self.old_waypoints)} waypoints"
+
 class DeleteWaypointCommand(WaypointCommandMixin, Command):
     """
     Command to delete a waypoint from a vehicle's path. Supports undo/redo.

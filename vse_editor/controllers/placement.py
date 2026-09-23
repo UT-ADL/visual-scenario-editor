@@ -27,6 +27,7 @@ from vse_editor.carla_io.spawning import (
 )
 from vse_editor.constants import GROUP_MENU_ICONS, WAYPOINT_MARKER_Z_OFFSET
 from vse_editor.commands import (
+    ClearWaypointsCommand,
     CompositeCommand,
     DeleteVehicleCommand,
     DeleteWaypointCommand,
@@ -768,9 +769,14 @@ def start_waypoint_creation(processor, reset_existing=True):
             print(f"Clearing {len(existing_waypoints)} existing waypoints for actor {vehicle_id}")
 
         if reset_existing:
-            # Reset waypoint data so the next placement starts a fresh path
-            processor.set_vehicle_waypoints(vehicle_id, [])
-            processor.clear_vehicle_destination_speed(vehicle_id)
+            # Reset waypoint data so the next placement starts a fresh path. A non-empty
+            # path is cleared through history: the later PlaceWaypointCommand undos only
+            # pop what they appended, so without this undo could never restore the old path.
+            if existing_waypoints:
+                processor.editor.execute_command(ClearWaypointsCommand(processor, vehicle_id))
+            else:
+                processor.set_vehicle_waypoints(vehicle_id, [])
+                processor.clear_vehicle_destination_speed(vehicle_id)
             processor.selected_waypoint_vehicle_id = None
             processor.selected_waypoint_index = None
         else:
@@ -1022,11 +1028,7 @@ def place_destination_at_click(processor, screen_x, screen_y):
         'yaw': world_coords.get('yaw', None)
     }
 
-    # Clear existing waypoints for this vehicle
-    processor.set_vehicle_waypoints(processor.selected_vehicle.id, [])
-    processor.clear_vehicle_destination_speed(processor.selected_vehicle.id)
-
-    # Auto-route to destination
+    # Auto-route to destination (replaces any existing path as one undoable step)
     processor.auto_route_to_destination(processor.selected_vehicle, destination)
 
     # Exit destination mode
@@ -1297,8 +1299,9 @@ def auto_route_to_destination(processor, vehicle, destination):
     }
     waypoints_to_add.append(final_waypoint)
 
-    # Add all waypoints to the vehicle as a single undoable operation
-    waypoint_commands = []
+    # Replace the existing path and add all waypoints as a single undoable operation:
+    # undoing it pops the new route, then the clear restores the previous path.
+    waypoint_commands = [ClearWaypointsCommand(processor, vehicle.id)]
     for waypoint in waypoints_to_add:
         command = PlaceWaypointCommand(
             processor,

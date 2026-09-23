@@ -2100,9 +2100,10 @@ class CameraImageProcessor:
         return traffic_lights._update_traffic_light_menu_anchor(self, group)
 
     def _compute_traffic_light_group_trigger_center(
-        self, group: TrafficLightGroupData
+        self, group: TrafficLightGroupData, *, stop_line: bool = False
     ) -> Optional[carla.Location]:
-        return traffic_lights._compute_traffic_light_group_trigger_center(self, group)
+        return traffic_lights._compute_traffic_light_group_trigger_center(
+            self, group, stop_line=stop_line)
 
 
     def start_traffic_light_trigger_scaling(self, mouse_pos: Tuple[int, int]) -> None:

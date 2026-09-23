@@ -256,8 +256,9 @@ def _get_traffic_light_rectangle_points(
     The drawn/clickable rectangle is a strip of TRAFFIC_LIGHT_STOP_LINE_MARKER_DEPTH meters
     anchored at the trigger box's front edge (the side toward the actual stop line, i.e. the
     downstream edge along the road travel direction), keeping the full lateral width. The
-    returned center stays at the full trigger-box center (it feeds default trigger placement,
-    connectors and list focus). If the travel direction can't be determined from a road
+    returned center stays at the full trigger-box center (it feeds the Triggers-list
+    numbering; connectors and list focus use the strip's corner centroid instead). If the travel
+    direction can't be determined from a road
     waypoint, the full box is returned (previous behavior).
     """
     if not traffic_light:
@@ -487,14 +488,16 @@ def render_selected_traffic_light_connectors(processor, screen):
             continue
 
         corners, trigger_center = rectangle_data
-        if trigger_center is not None:
-            stop_pos = trigger_center
-        elif corners:
+        # Anchor at the drawn stop-line strip's center, not the full trigger-box center
+        # (trigger_center), so the line meets the marker the user clicked.
+        if corners:
             stop_pos = carla.Location(
                 sum(corner.x for corner in corners) / len(corners),
                 sum(corner.y for corner in corners) / len(corners),
                 sum(corner.z for corner in corners) / len(corners),
             )
+        elif trigger_center is not None:
+            stop_pos = trigger_center
         else:
             failure_messages.append(f"Light {light_id}: trigger rectangle empty")
             continue

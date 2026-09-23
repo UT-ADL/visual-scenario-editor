@@ -918,9 +918,13 @@ def _update_traffic_light_menu_anchor(processor, group: Optional[TrafficLightGro
         processor.traffic_light_menu_position = None
 
 def _compute_traffic_light_group_trigger_center(
-    processor, group: TrafficLightGroupData
+    processor, group: TrafficLightGroupData, *, stop_line: bool = False
 ) -> Optional[carla.Location]:
-    """Return the world-space center of the traffic light trigger box overlay."""
+    """Return the group's world-space center: full trigger boxes, or drawn stop-line strips.
+
+    stop_line=False (full-box centers) keeps the Trigger list's stop-line numbering stable;
+    stop_line=True averages the drawn strips' corner centroids (camera focus).
+    """
     centers: List[carla.Location] = []
     fallback_points: List[carla.Location] = []
 
@@ -929,7 +933,13 @@ def _compute_traffic_light_group_trigger_center(
         if not rectangle_data:
             continue
         corners, center = rectangle_data
-        if center is not None:
+        if stop_line and corners:
+            centers.append(carla.Location(
+                sum(corner.x for corner in corners) / len(corners),
+                sum(corner.y for corner in corners) / len(corners),
+                sum(corner.z for corner in corners) / len(corners),
+            ))
+        elif center is not None:
             centers.append(center)
         elif corners:
             fallback_points.extend(corners)

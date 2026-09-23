@@ -1296,7 +1296,8 @@ class TrafficLightGroupSelectionMenu:
 
         focus_location = None
         try:
-            focus_location = processor._compute_traffic_light_group_trigger_center(group)
+            focus_location = processor._compute_traffic_light_group_trigger_center(
+                group, stop_line=True)
         except Exception:
             focus_location = None
 
